@@ -4,26 +4,57 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { privacyPolicyQuestions } from "@/lib/questions";
 import { QuestionRenderer } from "@/components/QuestionRenderer";
+import { supabase } from "@/lib/supabase";
 
 export default function QuestionnairePage() {
   const [responses, setResponses] = useState<Record<string, any>>({});
   const [submitted, setSubmitted] = useState(false);
+  const [loading, setLoading] = useState(false);
   const router = useRouter();
 
   const handleChange = (id: string, value: any) => {
     setResponses((prev) => ({ ...prev, [id]: value }));
   };
 
-  const handleSubmit = () => {
-    console.log("🧠 User responses:", responses);
+  const handleSubmit = async () => {
+    if (loading) return;
 
-    // Optional: store in localStorage or Supabase later
-    localStorage.setItem("policyResponses", JSON.stringify(responses));
+    // Validate all questions are answered
+    const unanswered = privacyPolicyQuestions.some(
+      (q) => responses[q.id] === undefined || responses[q.id] === ""
+    );
+    if (unanswered) {
+      alert("Please answer all questions before submitting.");
+      return;
+    }
 
-    setSubmitted(true);
-    setTimeout(() => {
-      router.push("/policy-options"); // 👈 Update this route when the next step is built
-    }, 1000);
+    setLoading(true);
+    const { data, error: userError } = await supabase.auth.getUser();
+    const user = data?.user;
+
+    if (userError || !user) {
+      console.error("User not authenticated");
+      setLoading(false);
+      alert("You must be logged in to submit the questionnaire.");
+      return;
+    }
+
+    const { error } = await supabase.from("user_questionnaire").insert([
+      {
+        user_id: user.id,
+        policy_type: "privacy_policy",
+        responses,
+      },
+    ]);
+
+    if (error) {
+      console.error("❌ Supabase insert failed:", error);
+      setLoading(false);
+      alert("Failed to save your responses. Please try again.");
+    } else {
+      setSubmitted(true);
+      setTimeout(() => router.push("/policy-options"), 1000);
+    }
   };
 
   return (
@@ -48,9 +79,12 @@ export default function QuestionnairePage() {
       <div className="pt-6">
         <button
           onClick={handleSubmit}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded shadow font-medium"
+          disabled={loading}
+          className={`bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded shadow font-medium ${
+            loading ? "opacity-50 cursor-not-allowed" : ""
+          }`}
         >
-          Continue
+          {loading ? "Saving..." : "Save and Continue"}
         </button>
       </div>
 
