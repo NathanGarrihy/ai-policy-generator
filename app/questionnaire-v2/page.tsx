@@ -22,18 +22,29 @@ const steps = [
 export default function QuestionnaireV2() {
   const [currentStep, setCurrentStep] = useState(0);
   const [answers, setAnswers] = useState<Record<string, any>>({});
+  const [saving, setSaving] = useState(false);
 
   const handleNext = async () => {
     if (currentStep < steps.length - 1) {
-      await saveToSupabase(); // Save on step change
-      setCurrentStep(currentStep + 1);
+      setSaving(true);
+      try {
+        await saveToSupabase();
+        setCurrentStep((prev) => prev + 1);
+      } finally {
+        setSaving(false);
+      }
     }
   };
 
   const handleBack = async () => {
     if (currentStep > 0) {
-      await saveToSupabase(); // Save on step change
-      setCurrentStep(currentStep - 1);
+      setSaving(true);
+      try {
+        await saveToSupabase();
+        setCurrentStep((prev) => prev - 1);
+      } finally {
+        setSaving(false);
+      }
     }
   };
 
@@ -108,21 +119,20 @@ export default function QuestionnaireV2() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto mt-10 p-6 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 rounded shadow space-y-8">
-      {/* Stepper */}
-      <div className="flex items-center gap-4">
+    <div className="max-w-4xl mx-auto overflow-x-auto px-4 pb-4">
+      <div className="flex items-center justify-center gap-4 flex-wrap text-sm text-zinc-400">
         {steps.map((step, index) => (
-          <div key={step.id} className="flex items-center gap-2">
+          <div key={step.id} className="flex items-center gap-1">
             <div
-              className={`rounded-full w-8 h-8 flex items-center justify-center text-sm font-bold ${
+              className={`w-6 h-6 rounded-full text-center text-sm font-bold ${
                 index === currentStep
                   ? "bg-blue-600 text-white"
-                  : "bg-zinc-300 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-200"
+                  : "bg-zinc-700 text-zinc-300"
               }`}
             >
               {index + 1}
             </div>
-            <span className="text-sm font-medium">{step.label}</span>
+            <span>{step.label}</span>
             {index < steps.length - 1 && (
               <span className="text-zinc-500">→</span>
             )}
@@ -134,19 +144,29 @@ export default function QuestionnaireV2() {
       <div>{stepComponent()}</div>
 
       {/* Navigation Buttons */}
-      <div className="flex justify-between pt-4">
+      <div className="flex justify-between pt-6">
         <button
           onClick={handleBack}
-          disabled={currentStep === 0}
-          className="bg-zinc-200 dark:bg-zinc-700 px-4 py-2 rounded text-sm"
+          disabled={currentStep === 0 || saving}
+          className={`px-4 py-2 rounded text-sm border ${
+            saving ? "opacity-50 cursor-not-allowed" : ""
+          }`}
         >
-          Back
+          {saving ? "Saving..." : "Back"}
         </button>
+
         <button
           onClick={handleNext}
-          className="bg-blue-600 text-white px-4 py-2 rounded text-sm"
+          disabled={saving}
+          className={`px-4 py-2 rounded text-sm bg-blue-600 text-white ${
+            saving ? "opacity-50 cursor-not-allowed" : "hover:bg-blue-700"
+          }`}
         >
-          Next
+          {saving
+            ? "Saving..."
+            : currentStep === steps.length - 2
+            ? "Review"
+            : "Next"}
         </button>
       </div>
     </div>

@@ -10,7 +10,7 @@ export default function CookiesStep({ answers, onChange }: Props) {
         Do you use cookies or tracking technologies?
       </label>
       <select
-        className="w-full border rounded px-3 py-2"
+        className="w-full px-4 py-2 border border-zinc-600 dark:border-zinc-500 rounded-md bg-zinc-900 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
         value={answers.useCookies || ""}
         onChange={(e) => onChange("useCookies", e.target.value)}
       >
@@ -25,7 +25,7 @@ export default function CookiesStep({ answers, onChange }: Props) {
             Do you display a cookie consent banner?
           </label>
           <select
-            className="w-full border rounded px-3 py-2"
+            className="w-full px-4 py-2 border border-zinc-600 dark:border-zinc-500 rounded-md bg-zinc-900 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
             value={answers.cookieBanner || ""}
             onChange={(e) => onChange("cookieBanner", e.target.value)}
           >

@@ -10,7 +10,7 @@ export default function ComplianceStep({ answers, onChange }: Props) {
         Do you support GDPR or CCPA data requests?
       </label>
       <select
-        className="w-full border rounded px-3 py-2"
+        className="w-full px-4 py-2 border border-zinc-600 dark:border-zinc-500 rounded-md bg-zinc-900 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
         value={answers.supportRights || ""}
         onChange={(e) => onChange("supportRights", e.target.value)}
       >
