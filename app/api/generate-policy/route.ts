@@ -7,18 +7,20 @@ export async function POST(req: Request) {
   if (!apiKey)
     return NextResponse.json({ error: "No API key" }, { status: 500 });
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.2,
-    }),
-  });
+  const response =
+    ("https://api.openai.com/v1/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.2,
+      }),
+    });
 
   const data = await response.json();
 
