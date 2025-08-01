@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { privacyPolicyQuestions } from "@/lib/questions";
 import { QuestionRenderer } from "@/components/QuestionRenderer";
