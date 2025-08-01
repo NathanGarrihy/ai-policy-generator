@@ -6,23 +6,25 @@ import { useRouter } from "next/navigation";
 
 export default function HomePage() {
   const [user, setUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
   const router = useRouter();
 
   useEffect(() => {
-    const getUser = async () => {
+    const fetchUser = async () => {
       const { data, error } = await supabase.auth.getUser();
-      if (data?.user) {
-        setUser(data.user);
-      } else {
+      if (error) {
+        console.error("Error fetching user:", error);
         setUser(null);
+      } else {
+        setUser(data?.user ?? null);
       }
+      setLoading(false);
     };
 
-    getUser();
+    fetchUser();
 
-    // Listen for auth state changes
-    const { data: listener } = supabase.auth.onAuthStateChange(
-      (event, session) => {
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
         if (session?.user) {
           setUser(session.user);
         } else {
@@ -32,24 +34,36 @@ export default function HomePage() {
     );
 
     return () => {
-      listener?.subscription.unsubscribe();
+      authListener?.subscription.unsubscribe();
     };
   }, []);
+
+  const handleLogin = async () => {
+    await supabase.auth.signInWithOAuth({
+      provider: "google",
+    });
+  };
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
     setUser(null);
   };
 
-  const handleLogin = async () => {
-    await supabase.auth.signInWithOAuth({ provider: "google" });
-  };
+  if (loading) {
+    return (
+      <main className="min-h-screen flex items-center justify-center bg-black text-white">
+        <p>Loading...</p>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen flex flex-col items-center justify-center text-white bg-black">
       {user ? (
         <>
-          <h1 className="text-2xl font-semibold mb-4">Welcome</h1>
+          <h1 className="text-2xl font-semibold mb-2">Welcome</h1>
+          <p className="text-zinc-400 mb-4">{user.email}</p>
+
           <button
             onClick={handleLogout}
             className="text-red-400 underline mb-8"
@@ -59,7 +73,7 @@ export default function HomePage() {
 
           <div className="flex gap-4">
             <button
-              onClick={() => router.push("/questionnaire")}
+              onClick={() => router.push("/questionnaire-v2")}
               className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"
             >
               Create New Policy

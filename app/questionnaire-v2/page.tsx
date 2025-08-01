@@ -1,14 +1,14 @@
 "use client";
 
 import { useState } from "react";
+import { supabase } from "@/lib/supabase";
+import { toast } from "sonner";
 import CompanyInfoStep from "@/components/questionnaire-v2/CompanyInfoStep";
 import DataCollectedStep from "@/components/questionnaire-v2/DataCollectedStep";
 import CookiesStep from "@/components/questionnaire-v2/CookiesStep";
 import RetentionStep from "@/components/questionnaire-v2/RetentionStep";
 import ComplianceStep from "@/components/questionnaire-v2/ComplianceStep";
-import { supabase } from "@/lib/supabase";
 import ReviewStep from "@/components/questionnaire-v2/ReviewStep";
-import { toast } from "sonner";
 
 const steps = [
   { id: "company", label: "Company Info" },
@@ -22,58 +22,73 @@ const steps = [
 export default function QuestionnaireV2() {
   const [currentStep, setCurrentStep] = useState(0);
   const [answers, setAnswers] = useState<Record<string, any>>({});
-  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  const handleNext = async () => {
-    if (currentStep < steps.length - 1) {
-      setSaving(true);
-      try {
-        await saveToSupabase();
-        setCurrentStep((prev) => prev + 1);
-      } finally {
-        setSaving(false);
-      }
-    }
-  };
-
-  const handleBack = async () => {
-    if (currentStep > 0) {
-      setSaving(true);
-      try {
-        await saveToSupabase();
-        setCurrentStep((prev) => prev - 1);
-      } finally {
-        setSaving(false);
-      }
-    }
-  };
+  const isLastStep = currentStep === steps.length - 1;
 
   const handleAnswerChange = (key: string, value: any) => {
     setAnswers((prev) => ({ ...prev, [key]: value }));
   };
 
   const saveToSupabase = async () => {
-    toast.loading("Saving responses...");
-
     const { data: authData, error: authError } = await supabase.auth.getUser();
     const user = authData?.user;
+
     if (!user || authError) {
       toast.error("User not authenticated. Please log in.");
-      return;
+      return false;
     }
 
-    const { error } = await supabase
-      .from("user_questionnaire")
-      .upsert([
-        { user_id: user.id, policy_type: "privacy_policy", responses: answers },
-      ]);
+    const { error } = await supabase.from("user_questionnaire").upsert([
+      {
+        user_id: user.id,
+        policy_type: "privacy_policy_v2",
+        responses: answers,
+      },
+    ]);
 
     if (error) {
-      console.error("Supabase error:", error);
-      toast.error("❌ Failed to save. Try again.");
-    } else {
-      toast.success("✅ Saved successfully!");
+      console.error("❌ Supabase error:", error);
+      toast.error("Failed to save. Try again.");
+      return false;
     }
+
+    return true;
+  };
+
+  const handleNext = async () => {
+    setLoading(true);
+    toast.loading("Saving responses...");
+    const success = await saveToSupabase();
+    toast.dismiss();
+
+    if (success && currentStep < steps.length - 1) {
+      setCurrentStep((prev) => prev + 1);
+    }
+
+    setLoading(false);
+  };
+
+  const handleBack = async () => {
+    setLoading(true);
+    await saveToSupabase();
+    setCurrentStep((prev) => Math.max(prev - 1, 0));
+    setLoading(false);
+  };
+
+  const handleFinalSave = async () => {
+    setLoading(true);
+    toast.loading("Saving final responses...");
+    const success = await saveToSupabase();
+    toast.dismiss();
+
+    if (success) {
+      toast.success("🎉 Saved successfully! Ready for policy generation.");
+      // Optional redirect here
+      // router.push("/policy-options");
+    }
+
+    setLoading(false);
   };
 
   const stepComponent = () => {
@@ -102,25 +117,11 @@ export default function QuestionnaireV2() {
         return null;
     }
   };
-  {
-    steps[currentStep].id === "review" && (
-      <div className="text-right">
-        <button
-          onClick={async () => {
-            await saveToSupabase();
-            alert("✅ Saved successfully! Ready for policy generation.");
-          }}
-          className="bg-green-600 text-white px-4 py-2 rounded text-sm mt-4"
-        >
-          Save & Finish
-        </button>
-      </div>
-    );
-  }
 
   return (
     <div className="max-w-4xl mx-auto overflow-x-auto px-4 pb-4">
-      <div className="flex items-center justify-center gap-4 flex-wrap text-sm text-zinc-400">
+      {/* Step progress */}
+      <div className="flex items-center justify-center gap-4 flex-wrap text-sm text-zinc-400 mb-8">
         {steps.map((step, index) => (
           <div key={step.id} className="flex items-center gap-1">
             <div
@@ -140,33 +141,29 @@ export default function QuestionnaireV2() {
         ))}
       </div>
 
-      {/* Step Form */}
+      {/* Step form */}
       <div>{stepComponent()}</div>
 
-      {/* Navigation Buttons */}
+      {/* Navigation */}
       <div className="flex justify-between pt-6">
         <button
           onClick={handleBack}
-          disabled={currentStep === 0 || saving}
+          disabled={currentStep === 0 || loading}
           className={`px-4 py-2 rounded text-sm border ${
-            saving ? "opacity-50 cursor-not-allowed" : ""
+            loading ? "opacity-50 cursor-not-allowed" : ""
           }`}
         >
-          {saving ? "Saving..." : "Back"}
+          {loading ? "Saving..." : "Back"}
         </button>
 
         <button
-          onClick={handleNext}
-          disabled={saving}
-          className={`px-4 py-2 rounded text-sm bg-blue-600 text-white ${
-            saving ? "opacity-50 cursor-not-allowed" : "hover:bg-blue-700"
+          onClick={isLastStep ? handleFinalSave : handleNext}
+          disabled={loading}
+          className={`bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded shadow font-medium ${
+            loading ? "opacity-50 cursor-not-allowed" : ""
           }`}
         >
-          {saving
-            ? "Saving..."
-            : currentStep === steps.length - 2
-            ? "Review"
-            : "Next"}
+          {loading ? "Saving..." : isLastStep ? "Save" : "Next"}
         </button>
       </div>
     </div>
