@@ -1,14 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
+
 import CompanyInfoStep from "@/components/questionnaire-v2/CompanyInfoStep";
 import DataCollectedStep from "@/components/questionnaire-v2/DataCollectedStep";
 import CookiesStep from "@/components/questionnaire-v2/CookiesStep";
 import RetentionStep from "@/components/questionnaire-v2/RetentionStep";
 import ComplianceStep from "@/components/questionnaire-v2/ComplianceStep";
 import ReviewStep from "@/components/questionnaire-v2/ReviewStep";
+
+const POLICY_TYPE = "privacy_policy_v2";
 
 const steps = [
   { id: "company", label: "Company Info" },
@@ -20,17 +24,53 @@ const steps = [
 ];
 
 export default function QuestionnaireV2() {
+  const router = useRouter();
+
   const [currentStep, setCurrentStep] = useState(0);
   const [answers, setAnswers] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(false);
+  const [bootstrapping, setBootstrapping] = useState(true);
 
   const isLastStep = currentStep === steps.length - 1;
 
+  // ---------- Prefill from existing DRAFT on mount ----------
+  useEffect(() => {
+    const bootstrap = async () => {
+      const { data: authData, error: authErr } = await supabase.auth.getUser();
+      const user = authData?.user;
+      if (authErr || !user) {
+        toast.error("Please sign in to continue.");
+        router.push("/");
+        return;
+      }
+
+      const { data: draft, error: draftErr } = await supabase
+        .from("user_questionnaire")
+        .select("id, responses")
+        .eq("user_id", user.id)
+        .eq("policy_type", POLICY_TYPE)
+        .eq("status", "draft")
+        .maybeSingle();
+
+      if (draftErr) {
+        console.error("Load draft error:", draftErr);
+        toast.error("Could not load your draft.");
+      } else if (draft?.responses) {
+        setAnswers(draft.responses || {});
+      }
+
+      setBootstrapping(false);
+    };
+
+    bootstrap();
+  }, [router]);
+
+  // ---------- Helpers ----------
   const handleAnswerChange = (key: string, value: any) => {
     setAnswers((prev) => ({ ...prev, [key]: value }));
   };
 
-  const saveToSupabase = async () => {
+  const saveDraft = async () => {
     const { data: authData, error: authError } = await supabase.auth.getUser();
     const user = authData?.user;
 
@@ -39,56 +79,131 @@ export default function QuestionnaireV2() {
       return false;
     }
 
-    const { error } = await supabase.from("user_questionnaire").upsert([
-      {
-        user_id: user.id,
-        policy_type: "privacy_policy_v2",
-        responses: answers,
-      },
-    ]);
+    // Try to find current draft
+    const { data: existing, error: selectErr } = await supabase
+      .from("user_questionnaire")
+      .select("id")
+      .eq("user_id", user.id)
+      .eq("policy_type", POLICY_TYPE)
+      .eq("status", "draft")
+      .maybeSingle();
 
-    if (error) {
-      console.error("❌ Supabase error:", error);
-      toast.error("Failed to save. Try again.");
+    if (selectErr) {
+      console.error("Select draft error:", selectErr);
+      toast.error(selectErr.message || "Failed to load draft.");
+      return false;
+    }
+
+    if (existing?.id) {
+      const { error: updateErr } = await supabase
+        .from("user_questionnaire")
+        .update({
+          responses: answers,
+          // company_name: answers.companyName ?? null, // add back after cache refreshed
+        })
+        .eq("id", existing.id);
+
+      if (updateErr) {
+        console.error("Update draft error:", updateErr);
+        toast.error(updateErr.message || "Failed to save draft.");
+        return false;
+      }
+      return true;
+    }
+
+    const { error: insertErr } = await supabase
+      .from("user_questionnaire")
+      .insert({
+        user_id: user.id,
+        policy_type: POLICY_TYPE,
+        status: "draft",
+        responses: answers,
+        // company_name: answers.companyName ?? null, // add back after cache refreshed
+      });
+
+    if (insertErr) {
+      console.error("Insert draft error:", insertErr);
+      toast.error(insertErr.message || "Failed to save draft.");
       return false;
     }
 
     return true;
   };
 
+  // ---------- Navigation ----------
   const handleNext = async () => {
     setLoading(true);
-    toast.loading("Saving responses...");
-    const success = await saveToSupabase();
-    toast.dismiss();
+    const t = toast.loading("Saving responses...");
+    const ok = await saveDraft();
+    toast.dismiss(t);
 
-    if (success && currentStep < steps.length - 1) {
-      setCurrentStep((prev) => prev + 1);
+    if (ok && currentStep < steps.length - 1) {
+      setCurrentStep((s) => s + 1);
+      toast.success("Saved.");
     }
-
     setLoading(false);
   };
 
   const handleBack = async () => {
     setLoading(true);
-    await saveToSupabase();
-    setCurrentStep((prev) => Math.max(prev - 1, 0));
+    await saveDraft(); // best-effort save on back too
+    setCurrentStep((s) => Math.max(s - 1, 0));
     setLoading(false);
   };
 
+  // ---------- Finalize: draft -> final, then create fresh draft ----------
   const handleFinalSave = async () => {
     setLoading(true);
-    toast.loading("Saving final responses...");
-    const success = await saveToSupabase();
-    toast.dismiss();
+    const t = toast.loading("Finalizing...");
 
-    if (success) {
-      toast.success("🎉 Saved successfully! Ready for policy generation.");
-      // Optional redirect here
-      // router.push("/policy-options");
+    const { data: authData, error: authErr } = await supabase.auth.getUser();
+    const user = authData?.user;
+
+    if (authErr || !user) {
+      toast.dismiss(t);
+      toast.error("Please sign in.");
+      setLoading(false);
+      return;
     }
 
+    // Always save latest edits first
+    const ok = await saveDraft();
+    if (!ok) {
+      toast.dismiss(t);
+      setLoading(false);
+      return;
+    }
+
+    // Promote draft -> final
+    const { error: promoteErr } = await supabase
+      .from("user_questionnaire")
+      .update({ status: "final" })
+      .eq("user_id", user.id)
+      .eq("policy_type", POLICY_TYPE)
+      .eq("status", "draft");
+
+    if (promoteErr) {
+      console.error("Promote error:", promoteErr);
+      toast.dismiss(t);
+      toast.error(promoteErr.message || "Failed to finalize.");
+      setLoading(false);
+      return;
+    }
+
+    // Seed a fresh empty draft (non-blocking)
+    await supabase.from("user_questionnaire").insert({
+      user_id: user.id,
+      policy_type: POLICY_TYPE,
+      status: "draft",
+      responses: {},
+    });
+
+    toast.dismiss(t);
+    toast.success("Saved as final. Ready for policy generation.");
     setLoading(false);
+
+    // Optional next step:
+    // router.push("/policy-options");
   };
 
   const stepComponent = () => {
@@ -117,6 +232,14 @@ export default function QuestionnaireV2() {
         return null;
     }
   };
+
+  if (bootstrapping) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-white">
+        Loading…
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-4xl mx-auto overflow-x-auto px-4 pb-4">
