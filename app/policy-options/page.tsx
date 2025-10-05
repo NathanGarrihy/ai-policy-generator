@@ -34,11 +34,13 @@ export default function PolicyOptionsPage() {
         return;
       }
 
+      // ✅ Correct table/shape + finalized answers
       const { data, error: fetchError } = await supabase
-        .from("user_questionnaire")
+        .from("user_questionnaires")
         .select("*")
         .eq("user_id", user.id)
         .eq("policy_type", "privacy_policy")
+        .eq("status", "final")
         .order("created_at", { ascending: false })
         .limit(1)
         .single();
@@ -49,14 +51,17 @@ export default function PolicyOptionsPage() {
         return;
       }
 
-      const responses = data.responses;
+      // ✅ Correct column + legacy fallback
+      const responses = data.answers ?? data.responses ?? {};
+      const jurisdictions: string[] =
+        responses.jurisdictions ?? responses.jurisdiction ?? [];
 
-      // 🔍 Analyze responses to generate tailored suggestions
       const recs: PolicyRecommendation[] = [];
 
+      // GDPR/UK GDPR → Privacy Policy
       if (
-        responses.jurisdiction?.includes("GDPR (EU)") ||
-        responses.jurisdiction?.includes("UK GDPR")
+        jurisdictions.includes("GDPR (EU)") ||
+        jurisdictions.includes("UK GDPR")
       ) {
         recs.push({
           id: "privacy-policy",
@@ -67,6 +72,7 @@ export default function PolicyOptionsPage() {
         });
       }
 
+      // Uses cookies → Cookie Policy
       if (responses.cookies_used === "Yes") {
         recs.push({
           id: "cookie-policy",
@@ -76,6 +82,7 @@ export default function PolicyOptionsPage() {
         });
       }
 
+      // Shares data → Data Sharing Disclosure
       if (responses.third_parties === "Yes") {
         recs.push({
           id: "data-sharing-disclosure",
@@ -85,6 +92,7 @@ export default function PolicyOptionsPage() {
         });
       }
 
+      // Data retention → Data Retention Policy
       if (responses.data_retention) {
         recs.push({
           id: "data-retention-policy",
@@ -94,7 +102,7 @@ export default function PolicyOptionsPage() {
         });
       }
 
-      // Always include general suggestion
+      // Always suggest Terms of Service
       recs.push({
         id: "terms-of-service",
         title: "Terms of Service",
@@ -131,6 +139,7 @@ export default function PolicyOptionsPage() {
               <p className="text-sm text-zinc-600 dark:text-zinc-400">
                 {rec.reason}
               </p>
+
               <div className="mt-3 flex gap-4">
                 <button
                   className="bg-blue-600 hover:bg-blue-700 text-white text-sm px-4 py-2 rounded"

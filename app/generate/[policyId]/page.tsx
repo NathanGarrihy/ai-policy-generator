@@ -6,7 +6,9 @@ import { supabase } from "@/lib/supabase";
 import { buildPrompt } from "@/lib/prompts";
 
 export default function GeneratePolicyPage() {
-  const { policyId } = useParams();
+  const params = useParams() as Record<string, string | string[]>;
+  const policyId = params?.policyId;
+
   const [policyText, setPolicyText] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -14,6 +16,12 @@ export default function GeneratePolicyPage() {
   useEffect(() => {
     const generatePolicy = async () => {
       setLoading(true);
+
+      if (!policyId || Array.isArray(policyId)) {
+        setError("No policy ID provided.");
+        setLoading(false);
+        return;
+      }
 
       const {
         data: { user },
@@ -28,10 +36,11 @@ export default function GeneratePolicyPage() {
 
       // Get most recent questionnaire
       const { data: qData, error: qError } = await supabase
-        .from("user_questionnaire")
+        .from("user_questionnaires")
         .select("*")
         .eq("user_id", user.id)
         .eq("policy_type", "privacy_policy")
+        .eq("status", "final")
         .order("created_at", { ascending: false })
         .limit(1)
         .single();
@@ -42,14 +51,17 @@ export default function GeneratePolicyPage() {
         return;
       }
 
-      const prompt = buildPrompt(policyId as string, qData.responses);
+      const prompt = buildPrompt(policyId, qData.answers);
 
       const res = await fetch("/api/generate-policy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt }),
       });
-
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Generate API ${res.status}: ${text}`);
+      }
       const result = await res.json();
 
       if (!result || !result.content) {

@@ -45,6 +45,8 @@ export default function RecommendationsPage() {
       </div>
     );
 
+  const cookiesYes = row.answers.cookies_used === "Yes";
+
   return (
     <div className="p-6 space-y-4">
       <h1 className="text-2xl font-semibold">Recommended next steps</h1>
@@ -78,6 +80,22 @@ export default function RecommendationsPage() {
         >
           Generate Privacy Policy
         </Link>
+        {cookiesYes && (
+          <div className="border-l-4 pl-4 rounded border-blue-500 bg-zinc-50 dark:bg-zinc-800 p-4">
+            <h2 className="text-xl font-semibold">Cookie Policy</h2>
+            <p className="text-sm text-zinc-600 dark:text-zinc-400">
+              You indicated that you use cookies — generate a Cookie Policy now.
+            </p>
+            <div className="mt-3">
+              <Link
+                href="/generate/cookie-policy"
+                className="bg-blue-600 hover:bg-blue-700 text-white text-sm px-4 py-2 rounded inline-block"
+              >
+                Generate Cookie Policy
+              </Link>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
