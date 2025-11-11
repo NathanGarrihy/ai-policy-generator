@@ -32,128 +32,146 @@ export default function GeneratePolicyPage() {
   useEffect(() => {
     const generatePolicy = async () => {
       setLoading(true);
+      setError(null);
 
-      if (!policyId || Array.isArray(policyId)) {
-        setError("No policy ID provided.");
+      try {
+        if (!policyId || Array.isArray(policyId)) {
+          setError("No policy ID provided.");
+          setLoading(false);
+          return;
+        }
+
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
+
+        if (userError || !user) {
+          setError("You must be logged in.");
+          setLoading(false);
+          return;
+        }
+
+        const policyType = mapPolicyIdToType(policyId);
+
+        // Get most recent questionnaire for this policy type
+        const { data: qData, error: qError } = await supabase
+          .from("user_questionnaires")
+          .select("*")
+          .eq("user_id", user.id)
+          .eq("policy_type", policyType)
+          .eq("status", "final")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .single();
+
+        if (qError || !qData) {
+          setError(`No ${policyType} questionnaire data found. Please complete the questionnaire first.`);
+          setLoading(false);
+          return;
+        }
+
+        const prompt = buildPrompt(policyId, qData.answers);
+
+        const res = await fetch("/api/generate-policy", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt }),
+        });
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({ error: "Unknown error" }));
+          throw new Error(errorData.error || `Generate API ${res.status}: Failed to generate policy`);
+        }
+        const result = await res.json();
+
+        if (!result || !result.content) {
+          const errorMsg = result?.error || "Failed to generate policy. No content was returned.";
+          setError(errorMsg);
+          setLoading(false);
+          return;
+        }
+
+        const generatedContent = result.content;
+        setPolicyText(generatedContent);
+
+        // Run PolicyCop analysis
+        const complianceResult = analyzePolicyCompliance(generatedContent);
+        setPolicyCopResult(complianceResult);
+
+        // Extract mappings
+        const mappings = extractMappings(generatedContent);
+
+        // Get latest version number for this policy type
+        const { data: latestPolicy } = await supabase
+          .from("user_policies")
+          .select("id, version_number")
+          .eq("user_id", user.id)
+          .eq("policy_type", policyType)
+          .order("version_number", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        const nextVersion = latestPolicy ? latestPolicy.version_number + 1 : 1;
+        const parentVersionId = latestPolicy?.id || null;
+        setVersionNumber(nextVersion);
+
+        // Save policy with versioning
+        const { data: savedPolicy, error: saveError } = await supabase
+          .from("user_policies")
+          .insert({
+            user_id: user.id,
+            policy_type: policyType,
+            content: generatedContent,
+            version_number: nextVersion,
+            parent_version_id: parentVersionId,
+            framework_coverage: {
+              gdpr_coverage: complianceResult.gdpr_coverage,
+              ai_act_coverage: complianceResult.ai_act_coverage,
+              iso_42001_coverage: complianceResult.iso_42001_coverage,
+            },
+            source_questionnaire_id: qData.id,
+          })
+          .select("id")
+          .single();
+
+        if (saveError) {
+          console.error("Error saving policy:", saveError);
+          // Provide detailed error message
+          let errorMsg = "Policy generated but failed to save.";
+          if (saveError.message) {
+            errorMsg += ` Error: ${saveError.message}`;
+          } else if (saveError.code) {
+            errorMsg += ` Database error (${saveError.code})`;
+          }
+          if (saveError.details) {
+            errorMsg += ` Details: ${saveError.details}`;
+          }
+          setError(errorMsg);
+          setLoading(false);
+          return;
+        }
+
+        setSavedPolicyId(savedPolicy.id);
+
+        // Save mappings
+        if (mappings.length > 0 && savedPolicy) {
+          const mappingInserts = mappings.map((mapping) => ({
+            policy_version_id: savedPolicy.id,
+            section_id: mapping.section_id,
+            framework: mapping.framework,
+            article_ref: mapping.article_ref,
+            confidence: 1.0,
+          }));
+
+          await supabase.from("policy_mappings").insert(mappingInserts);
+        }
+
         setLoading(false);
-        return;
-      }
-
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
-
-      if (userError || !user) {
-        setError("You must be logged in.");
+      } catch (e: any) {
+        console.error("Error generating policy:", e);
+        setError(e.message || "An unexpected error occurred while generating the policy.");
         setLoading(false);
-        return;
       }
-
-      const policyType = mapPolicyIdToType(policyId);
-
-      // Get most recent questionnaire for this policy type
-      const { data: qData, error: qError } = await supabase
-        .from("user_questionnaires")
-        .select("*")
-        .eq("user_id", user.id)
-        .eq("policy_type", policyType)
-        .eq("status", "final")
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .single();
-
-      if (qError || !qData) {
-        setError(`No ${policyType} questionnaire data found. Please complete the questionnaire first.`);
-        setLoading(false);
-        return;
-      }
-
-      const prompt = buildPrompt(policyId, qData.answers);
-
-      const res = await fetch("/api/generate-policy", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Generate API ${res.status}: ${text}`);
-      }
-      const result = await res.json();
-
-      if (!result || !result.content) {
-        setError("Failed to generate policy.");
-        setLoading(false);
-        return;
-      }
-
-      const generatedContent = result.content;
-      setPolicyText(generatedContent);
-
-      // Run PolicyCop analysis
-      const complianceResult = analyzePolicyCompliance(generatedContent);
-      setPolicyCopResult(complianceResult);
-
-      // Extract mappings
-      const mappings = extractMappings(generatedContent);
-
-      // Get latest version number for this policy type
-      const { data: latestPolicy } = await supabase
-        .from("user_policies")
-        .select("id, version_number")
-        .eq("user_id", user.id)
-        .eq("policy_type", policyType)
-        .order("version_number", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      const nextVersion = latestPolicy ? latestPolicy.version_number + 1 : 1;
-      const parentVersionId = latestPolicy?.id || null;
-      setVersionNumber(nextVersion);
-
-      // Save policy with versioning
-      const { data: savedPolicy, error: saveError } = await supabase
-        .from("user_policies")
-        .insert({
-          user_id: user.id,
-          policy_type: policyType,
-          content: generatedContent,
-          version_number: nextVersion,
-          parent_version_id: parentVersionId,
-          framework_coverage: {
-            gdpr_coverage: complianceResult.gdpr_coverage,
-            ai_act_coverage: complianceResult.ai_act_coverage,
-            iso_42001_coverage: complianceResult.iso_42001_coverage,
-          },
-          source_questionnaire_id: qData.id,
-        })
-        .select("id")
-        .single();
-
-      if (saveError) {
-        console.error("Error saving policy:", saveError);
-        setError("Policy generated but failed to save. Please try again.");
-        setLoading(false);
-        return;
-      }
-
-      setSavedPolicyId(savedPolicy.id);
-
-      // Save mappings
-      if (mappings.length > 0 && savedPolicy) {
-        const mappingInserts = mappings.map((mapping) => ({
-          policy_version_id: savedPolicy.id,
-          section_id: mapping.section_id,
-          framework: mapping.framework,
-          article_ref: mapping.article_ref,
-          confidence: 1.0,
-        }));
-
-        await supabase.from("policy_mappings").insert(mappingInserts);
-      }
-
-      setLoading(false);
     };
 
     generatePolicy();

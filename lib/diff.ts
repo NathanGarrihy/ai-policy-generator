@@ -71,4 +71,3 @@ export function getChangeSummary(
 
   return changes.length > 0 ? changes.join(", ") : "No significant changes";
 }
-
