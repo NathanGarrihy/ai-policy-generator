@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import type { PrivacyQuestionnaire } from "@/lib/types";
 
-type Step = 0 | 1 | 2 | 3 | 4 | 5;
+type Step = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 const JURIS = [
   "GDPR (EU)",
@@ -38,9 +38,11 @@ export default function QuestionnairePage() {
     company_name: "",
     jurisdictions: [],
     data_collected: [],
+    purpose_of_processing: "",
     third_parties: "No",
     cookies_used: "No",
     data_retention: "1 year",
+    dpo_contact: "",
   });
 
   // Load session user id
@@ -62,11 +64,15 @@ export default function QuestionnairePage() {
       case 2:
         return answers.data_collected.length > 0;
       case 3:
-        return ["Yes", "No"].includes(answers.third_parties);
+        return answers.purpose_of_processing.trim().length > 10;
       case 4:
-        return ["Yes", "No"].includes(answers.cookies_used);
+        return ["Yes", "No"].includes(answers.third_parties);
       case 5:
+        return ["Yes", "No"].includes(answers.cookies_used);
+      case 6:
         return RET.includes(answers.data_retention);
+      case 7:
+        return answers.dpo_contact.trim().length > 1;
       default:
         return false;
     }
@@ -127,7 +133,7 @@ export default function QuestionnairePage() {
 
   function next() {
     if (!canNext) return;
-    saveDraft().then(() => setStep((s) => Math.min(5, s + 1) as Step));
+    saveDraft().then(() => setStep((s) => Math.min(7, s + 1) as Step));
   }
   function back() {
     setStep((s) => Math.max(0, s - 1) as Step);
@@ -138,7 +144,7 @@ export default function QuestionnairePage() {
       <h1 className="text-2xl font-semibold mb-4">
         Privacy Policy Questionnaire
       </h1>
-      <p className="text-sm text-neutral-500 mb-6">Step {step + 1} of 6</p>
+      <p className="text-sm text-neutral-500 mb-6">Step {step + 1} of 8</p>
 
       {step === 0 && (
         <div className="space-y-2">
@@ -208,6 +214,25 @@ export default function QuestionnairePage() {
 
       {step === 3 && (
         <div className="space-y-2">
+          <label className="block text-sm font-medium">
+            What is the purpose of processing personal data?
+          </label>
+          <textarea
+            className="w-full rounded border p-2 min-h-[100px]"
+            value={answers.purpose_of_processing}
+            onChange={(e) =>
+              setAnswers((a) => ({
+                ...a,
+                purpose_of_processing: e.target.value,
+              }))
+            }
+            placeholder="e.g., To provide our services, process payments, send marketing communications, etc."
+          />
+        </div>
+      )}
+
+      {step === 4 && (
+        <div className="space-y-2">
           <div className="text-sm font-medium">
             Do you share data with third parties?
           </div>
@@ -228,7 +253,7 @@ export default function QuestionnairePage() {
         </div>
       )}
 
-      {step === 4 && (
+      {step === 5 && (
         <div className="space-y-2">
           <div className="text-sm font-medium">
             Do you use cookies or tracking technologies?
@@ -250,7 +275,7 @@ export default function QuestionnairePage() {
         </div>
       )}
 
-      {step === 5 && (
+      {step === 6 && (
         <div className="space-y-2">
           <div className="text-sm font-medium">
             How long do you retain personal data?
@@ -274,6 +299,22 @@ export default function QuestionnairePage() {
         </div>
       )}
 
+      {step === 7 && (
+        <div className="space-y-2">
+          <label className="block text-sm font-medium">
+            DPO / Privacy Contact (email or name)
+          </label>
+          <input
+            className="w-full rounded border p-2"
+            value={answers.dpo_contact}
+            onChange={(e) =>
+              setAnswers((a) => ({ ...a, dpo_contact: e.target.value }))
+            }
+            placeholder="privacy@company.com or John Doe"
+          />
+        </div>
+      )}
+
       <div className="mt-8 flex items-center justify-between">
         <button
           className="rounded px-4 py-2 border"
@@ -283,7 +324,7 @@ export default function QuestionnairePage() {
           Back
         </button>
 
-        {step < 5 ? (
+        {step < 7 ? (
           <button
             className="rounded bg-black text-white px-4 py-2 disabled:opacity-50"
             disabled={!canNext || saving}

@@ -26,7 +26,11 @@ export default async function handler(
   try {
     const { user_id, policy_type, status, answers } = req.body || {};
     if (!user_id) throw new Error("Missing user_id");
-    if (policy_type !== "privacy_policy")
+    if (
+      !["privacy_policy", "ai_usage_policy", "ai_governance_policy"].includes(
+        policy_type
+      )
+    )
       throw new Error("Invalid policy_type");
     if (!["draft", "final"].includes(status)) throw new Error("Invalid status");
 
@@ -37,7 +41,7 @@ export default async function handler(
         .from("user_questionnaires")
         .select("id")
         .eq("user_id", user_id)
-        .eq("policy_type", "privacy_policy")
+        .eq("policy_type", policy_type)
         .eq("status", "draft")
         .order("created_at", { ascending: false })
         .limit(1)
@@ -58,7 +62,7 @@ export default async function handler(
           .from("user_questionnaires")
           .insert({
             user_id,
-            policy_type: "privacy_policy",
+            policy_type,
             status: "draft",
             answers,
           })
@@ -75,7 +79,7 @@ export default async function handler(
       .from("user_questionnaires")
       .insert({
         user_id,
-        policy_type: "privacy_policy",
+        policy_type,
         status: "final",
         answers,
       })
@@ -87,7 +91,7 @@ export default async function handler(
       .from("user_questionnaires")
       .delete()
       .eq("user_id", user_id)
-      .eq("policy_type", "privacy_policy")
+      .eq("policy_type", policy_type)
       .eq("status", "draft");
 
     return res

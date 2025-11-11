@@ -20,6 +20,13 @@ export const privacyPolicyQuestions = [
     required: true,
   },
   {
+    id: "purpose_of_processing",
+    label: "What is the purpose of processing personal data?",
+    type: "textarea",
+    required: true,
+    placeholder: "e.g., To provide our services, process payments, send marketing communications, etc.",
+  },
+  {
     id: "third_parties",
     label: "Do you share data with third parties?",
     type: "yes-no",
@@ -43,5 +50,12 @@ export const privacyPolicyQuestions = [
       "Until request for deletion",
     ],
     required: false,
+  },
+  {
+    id: "dpo_contact",
+    label: "DPO / Privacy Contact (email or name)",
+    type: "text",
+    required: true,
+    placeholder: "privacy@company.com or John Doe",
   },
 ];

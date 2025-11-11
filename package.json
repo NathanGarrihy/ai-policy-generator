@@ -10,16 +10,21 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.51.0",
+    "diff": "^5.1.0",
+    "docx": "^8.5.0",
     "dotenv": "^17.2.3",
     "next": "15.4.1",
+    "pdf-lib": "^1.17.1",
     "react": "19.1.0",
     "react-dom": "19.1.0",
+    "react-markdown": "^9.0.1",
     "sonner": "^2.0.6",
     "zod": "^4.1.11"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
+    "@types/diff": "^7.0.2",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

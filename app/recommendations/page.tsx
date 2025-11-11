@@ -2,100 +2,194 @@
 
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import type { QuestionnaireRow } from "@/lib/types";
+import type { QuestionnaireRow, PolicyVersion } from "@/lib/types";
 import Link from "next/link";
 
+type PolicyStatus = {
+  type: string;
+  name: string;
+  questionnaireCompleted: boolean;
+  policyGenerated: boolean;
+  latestPolicy?: PolicyVersion;
+  questionnaireLink: string;
+  generateLink: string;
+};
+
 export default function RecommendationsPage() {
-  const [row, setRow] = useState<QuestionnaireRow | null>(null);
+  const [policies, setPolicies] = useState<PolicyStatus[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    (async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) {
-        setLoading(false);
-        return;
-      }
-
-      const { data, error } = await supabase
-        .from("user_questionnaires")
-        .select("*")
-        .eq("user_id", user.id)
-        .eq("policy_type", "privacy_policy")
-        .eq("status", "final")
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (!error) setRow(data as any);
-      setLoading(false);
-    })();
+    loadRecommendations();
   }, []);
 
-  if (loading) return <div className="p-6">Loading…</div>;
-  if (!row)
-    return (
-      <div className="p-6 space-y-4">
-        <h1 className="text-xl font-semibold">No final questionnaire found</h1>
-        <Link className="underline" href="/questionnaire">
-          Start the questionnaire
-        </Link>
-      </div>
+  async function loadRecommendations() {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+
+    const policyTypes = [
+      {
+        type: "privacy_policy",
+        name: "Privacy Policy",
+        questionnaireLink: "/questionnaire",
+        generateLink: "/generate/privacy-policy",
+      },
+      {
+        type: "ai_usage_policy",
+        name: "AI Usage Policy",
+        questionnaireLink: "/questionnaire/ai-usage",
+        generateLink: "/generate/ai-usage-policy",
+      },
+      {
+        type: "ai_governance_policy",
+        name: "AI Governance & Ethics Policy",
+        questionnaireLink: "/questionnaire/ai-governance",
+        generateLink: "/generate/ai-governance-policy",
+      },
+    ];
+
+    const statuses: PolicyStatus[] = await Promise.all(
+      policyTypes.map(async (pt) => {
+        // Check for questionnaire
+        const { data: questionnaire } = await supabase
+          .from("user_questionnaires")
+          .select("*")
+          .eq("user_id", user.id)
+          .eq("policy_type", pt.type)
+          .eq("status", "final")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        // Check for generated policy
+        const { data: policy } = await supabase
+          .from("user_policies")
+          .select("*")
+          .eq("user_id", user.id)
+          .eq("policy_type", pt.type)
+          .order("version_number", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        return {
+          type: pt.type,
+          name: pt.name,
+          questionnaireCompleted: !!questionnaire,
+          policyGenerated: !!policy,
+          latestPolicy: policy as PolicyVersion | undefined,
+          questionnaireLink: pt.questionnaireLink,
+          generateLink: pt.generateLink,
+        };
+      })
     );
 
-  const cookiesYes = row.answers.cookies_used === "Yes";
+    setPolicies(statuses);
+    setLoading(false);
+  }
+
+  if (loading) return <div className="p-6">Loading…</div>;
 
   return (
-    <div className="p-6 space-y-4">
-      <h1 className="text-2xl font-semibold">Recommended next steps</h1>
+    <div className="max-w-4xl mx-auto p-6 space-y-6">
+      <h1 className="text-2xl font-semibold">Policy Recommendations</h1>
       <p className="text-sm text-neutral-500">
-        Based on your answers for <strong>{row.policy_type}</strong>.
+        Complete questionnaires and generate your compliance policies
       </p>
 
-      <ul className="list-disc pl-5 space-y-2">
-        <li>
-          Generate your <strong>Privacy Policy</strong> now.
-        </li>
-        {row.answers.cookies_used === "Yes" && (
-          <li>
-            Also generate a <strong>Cookie Policy</strong>.
-          </li>
-        )}
-        {row.answers.third_parties === "Yes" && (
-          <li>
-            Add a <strong>Data Sharing Disclosure</strong>.
-          </li>
-        )}
-        <li>
-          Consider a <strong>Terms of Service</strong> to cover product usage.
-        </li>
-      </ul>
+      <div className="space-y-4">
+        {policies.map((policy) => (
+          <div
+            key={policy.type}
+            className="border border-neutral-200 dark:border-zinc-800 rounded-lg p-6 space-y-4"
+          >
+            <div className="flex items-start justify-between">
+              <div className="flex-1">
+                <h2 className="text-xl font-semibold">{policy.name}</h2>
+                <div className="mt-2 flex gap-4 text-sm">
+                  <span
+                    className={
+                      policy.questionnaireCompleted
+                        ? "text-green-600 dark:text-green-400"
+                        : "text-neutral-500"
+                    }
+                  >
+                    {policy.questionnaireCompleted ? "✓" : "○"} Questionnaire
+                  </span>
+                  <span
+                    className={
+                      policy.policyGenerated
+                        ? "text-green-600 dark:text-green-400"
+                        : "text-neutral-500"
+                    }
+                  >
+                    {policy.policyGenerated ? "✓" : "○"} Policy Generated
+                  </span>
+                </div>
+                {policy.latestPolicy?.framework_coverage && (
+                  <div className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
+                    Coverage:{" "}
+                    {policy.latestPolicy.framework_coverage.gdpr_coverage
+                      ? `GDPR ${Math.round(
+                          policy.latestPolicy.framework_coverage.gdpr_coverage *
+                            100
+                        )}%`
+                      : ""}
+                    {policy.latestPolicy.framework_coverage.ai_act_coverage
+                      ? `, AI Act ${Math.round(
+                          policy.latestPolicy.framework_coverage
+                            .ai_act_coverage * 100
+                        )}%`
+                      : ""}
+                    {policy.latestPolicy.framework_coverage.iso_42001_coverage
+                      ? `, ISO 42001 ${Math.round(
+                          policy.latestPolicy.framework_coverage
+                            .iso_42001_coverage * 100
+                        )}%`
+                      : ""}
+                  </div>
+                )}
+              </div>
+            </div>
 
-      <div className="pt-4">
-        <Link
-          href="/generate/privacy-policy"
-          className="rounded bg-black text-white px-4 py-2 inline-block"
-        >
-          Generate Privacy Policy
-        </Link>
-        {cookiesYes && (
-          <div className="border-l-4 pl-4 rounded border-blue-500 bg-zinc-50 dark:bg-zinc-800 p-4">
-            <h2 className="text-xl font-semibold">Cookie Policy</h2>
-            <p className="text-sm text-zinc-600 dark:text-zinc-400">
-              You indicated that you use cookies — generate a Cookie Policy now.
-            </p>
-            <div className="mt-3">
-              <Link
-                href="/generate/cookie-policy"
-                className="bg-blue-600 hover:bg-blue-700 text-white text-sm px-4 py-2 rounded inline-block"
-              >
-                Generate Cookie Policy
-              </Link>
+            <div className="flex gap-2">
+              {!policy.questionnaireCompleted ? (
+                <Link
+                  href={policy.questionnaireLink}
+                  className="rounded bg-black text-white px-4 py-2 inline-block hover:bg-neutral-800"
+                >
+                  Start Questionnaire
+                </Link>
+              ) : !policy.policyGenerated ? (
+                <Link
+                  href={policy.generateLink}
+                  className="rounded bg-emerald-600 text-white px-4 py-2 inline-block hover:bg-emerald-700"
+                >
+                  Generate Policy
+                </Link>
+              ) : (
+                <>
+                  <Link
+                    href={policy.generateLink}
+                    className="rounded bg-blue-600 text-white px-4 py-2 inline-block hover:bg-blue-700"
+                  >
+                    View/Regenerate
+                  </Link>
+                  <Link
+                    href={`/policies/${policy.type}/versions`}
+                    className="rounded border border-neutral-300 dark:border-zinc-700 px-4 py-2 inline-block hover:bg-neutral-50 dark:hover:bg-zinc-900"
+                  >
+                    View Versions
+                  </Link>
+                </>
+              )}
             </div>
           </div>
-        )}
+        ))}
       </div>
     </div>
   );
