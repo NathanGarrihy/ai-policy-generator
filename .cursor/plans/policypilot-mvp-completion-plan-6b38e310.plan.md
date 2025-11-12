@@ -327,8 +327,8 @@
 ### To-dos
 
 - [x] Verify database schema matches documentation/database-schema.md - check if policy_mappings and policy_reviews tables exist, verify user_policies columns
-- [ ] Update prompt templates in lib/prompts.ts to match mvp_prompt_flow.md specification - add structured output format (POLICY-MARKDOWN and METAJSON blocks), include mapping appendix requirements, add placeholder handling instructions
-- [ ] Create lib/parser.ts to parse POLICY-MARKDOWN and METAJSON blocks from OpenAI responses - validate schema, extract section-level mappings, handle malformed outputs gracefully
+- [x] Update prompt templates in lib/prompts.ts to match mvp_prompt_flow.md specification - add structured output format (POLICY-MARKDOWN and METAJSON blocks), include mapping appendix requirements, add placeholder handling instructions
+- [x] Create lib/parser.ts to parse POLICY-MARKDOWN and METAJSON blocks from OpenAI responses - validate schema, extract section-level mappings, handle malformed outputs gracefully
 - [ ] Integrate new parser in app/generate/[policyId]/page.tsx - use METAJSON for mappings, add mapping appendix to policy content, validate policy structure
 - [ ] Enhance PolicyCop in lib/policycop.ts - add section-level scoring, improve rule detection, expand compliance rules, add context-aware matching
 - [ ] Improve export formatting in lib/export.ts - add proper mapping table layout in PDF/DOCX, include version history with coverage deltas, ensure professional buyer-ready formatting

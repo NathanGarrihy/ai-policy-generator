@@ -5,7 +5,11 @@ import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { buildPrompt } from "@/lib/prompts";
 import { analyzePolicyCompliance, extractMappings } from "@/lib/policycop";
-import { extractMappingsFromMetadata } from "@/lib/parser";
+import {
+  extractMappingsFromMetadata,
+  validatePolicyStructure,
+  validateLastUpdatedFooter,
+} from "@/lib/parser";
 import ReactMarkdown from "react-markdown";
 import ExportButton from "@/components/ExportButton";
 
@@ -29,11 +33,13 @@ export default function GeneratePolicyPage() {
   const [policyCopResult, setPolicyCopResult] = useState<any>(null);
   const [savedPolicyId, setSavedPolicyId] = useState<string | null>(null);
   const [versionNumber, setVersionNumber] = useState<number>(1);
+  const [validationWarnings, setValidationWarnings] = useState<string[]>([]);
 
   useEffect(() => {
     const generatePolicy = async () => {
       setLoading(true);
       setError(null);
+      setValidationWarnings([]);
 
       try {
         if (!policyId || Array.isArray(policyId)) {
@@ -120,6 +126,35 @@ export default function GeneratePolicyPage() {
 
         // Content is already parsed by the API (POLICY-MARKDOWN block extracted)
         const generatedContent = result.content;
+        
+        // Validate policy structure
+        const validation = validatePolicyStructure(
+          generatedContent,
+          policyType as "privacy_policy" | "ai_usage_policy" | "ai_governance_policy",
+          result.metadata
+        );
+
+        // Validate last updated footer
+        const hasLastUpdated = validateLastUpdatedFooter(generatedContent);
+        const allWarnings = [...validation.warnings];
+        if (!hasLastUpdated) {
+          allWarnings.push("Last updated footer not found or incorrectly formatted");
+        }
+
+        // Log validation results
+        if (validation.errors.length > 0) {
+          console.warn("Policy validation errors:", validation.errors);
+        }
+        if (allWarnings.length > 0) {
+          console.warn("Policy validation warnings:", allWarnings);
+          setValidationWarnings(allWarnings);
+        }
+
+        // If validation fails critically, log but continue (prompts should ensure structure)
+        if (!validation.isValid) {
+          console.error("Policy structure validation failed:", validation.errors);
+        }
+
         setPolicyText(generatedContent);
 
         // Run PolicyCop analysis on the clean content
@@ -141,6 +176,17 @@ export default function GeneratePolicyPage() {
         // Fallback to regex extraction if no metadata or no mappings found
         if (mappings.length === 0) {
           mappings = extractMappings(generatedContent);
+        }
+
+        // If mapping appendix validation failed but we have mappings, add warning
+        if (validation.errors.some((e) => e.includes("Mapping Appendix"))) {
+          if (mappings.length === 0) {
+            const updatedWarnings = [
+              ...allWarnings,
+              "Mapping Appendix not found and no framework mappings extracted",
+            ];
+            setValidationWarnings(updatedWarnings);
+          }
         }
 
         // Get latest version number for this policy type
@@ -330,6 +376,19 @@ export default function GeneratePolicyPage() {
               </ul>
             </div>
           )}
+        </div>
+      )}
+
+      {validationWarnings.length > 0 && (
+        <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded p-4 space-y-2">
+          <h3 className="text-sm font-semibold text-yellow-800 dark:text-yellow-200">
+            Validation Warnings
+          </h3>
+          <ul className="list-disc list-inside text-sm text-yellow-700 dark:text-yellow-300 space-y-1">
+            {validationWarnings.map((warning, idx) => (
+              <li key={idx}>{warning}</li>
+            ))}
+          </ul>
         </div>
       )}
 
