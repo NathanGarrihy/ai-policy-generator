@@ -1,63 +1,62 @@
-# Database Schema Changes
+-- db schema for cursor understanding.
+-- WARNING: This schema is for context only and is not meant to be run.
+-- Table order and constraints may not be valid for execution.
 
-## New Tables
-
-### policy_mappings
-Stores framework mappings for policy sections.
-
-```sql
-CREATE TABLE policy_mappings (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  policy_version_id UUID NOT NULL REFERENCES user_policies(id) ON DELETE CASCADE,
-  section_id TEXT NOT NULL,
-  framework TEXT NOT NULL CHECK (framework IN ('GDPR', 'AI_ACT', 'ISO_42001')),
-  article_ref TEXT NOT NULL,
-  confidence DECIMAL(3,2) DEFAULT 1.0 CHECK (confidence >= 0 AND confidence <= 1),
-  created_at TIMESTAMPTZ DEFAULT NOW()
+CREATE TABLE public.policy_mappings (
+id uuid NOT NULL DEFAULT gen_random_uuid(),
+policy_version_id uuid NOT NULL,
+section_id text NOT NULL,
+framework text NOT NULL CHECK (framework = ANY (ARRAY['GDPR'::text, 'AI_ACT'::text, 'ISO_42001'::text])),
+article_ref text NOT NULL,
+confidence numeric DEFAULT 1.00 CHECK (confidence >= 0::numeric AND confidence <= 1::numeric),
+created_at timestamp with time zone DEFAULT now(),
+CONSTRAINT policy_mappings_pkey PRIMARY KEY (id),
+CONSTRAINT policy_mappings_policy_version_id_fkey FOREIGN KEY (policy_version_id) REFERENCES public.user_policies(id)
 );
-
-CREATE INDEX idx_policy_mappings_version ON policy_mappings(policy_version_id);
-CREATE INDEX idx_policy_mappings_framework ON policy_mappings(framework);
-```
-
-### policy_reviews
-Stores human review records for policy versions.
-
-```sql
-CREATE TABLE policy_reviews (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  policy_version_id UUID NOT NULL REFERENCES user_policies(id) ON DELETE CASCADE,
-  reviewer TEXT NOT NULL,
-  accuracy_score DECIMAL(3,2) CHECK (accuracy_score >= 0 AND accuracy_score <= 1),
-  notes TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW()
+CREATE TABLE public.policy_reviews (
+id uuid NOT NULL DEFAULT gen_random_uuid(),
+policy_version_id uuid NOT NULL,
+reviewer text NOT NULL,
+accuracy_score numeric CHECK (accuracy_score >= 0::numeric AND accuracy_score <= 1::numeric),
+notes text,
+created_at timestamp with time zone DEFAULT now(),
+CONSTRAINT policy_reviews_pkey PRIMARY KEY (id),
+CONSTRAINT policy_reviews_policy_version_id_fkey FOREIGN KEY (policy_version_id) REFERENCES public.user_policies(id)
 );
-
-CREATE INDEX idx_policy_reviews_version ON policy_reviews(policy_version_id);
-```
-
-## Updated Tables
-
-### user_policies
-Add versioning and framework coverage fields.
-
-```sql
-ALTER TABLE user_policies
-ADD COLUMN IF NOT EXISTS version_number INTEGER DEFAULT 1,
-ADD COLUMN IF NOT EXISTS parent_version_id UUID REFERENCES user_policies(id) ON DELETE SET NULL,
-ADD COLUMN IF NOT EXISTS framework_coverage JSONB;
-
-CREATE INDEX idx_user_policies_version ON user_policies(parent_version_id);
-CREATE INDEX idx_user_policies_user_type ON user_policies(user_id, policy_type);
-```
-
-### user_questionnaires
-Update to support new policy types (already supports via JSONB answers column, but may want to add constraint).
-
-```sql
--- If needed, add constraint for policy_type
-ALTER TABLE user_questionnaires
-ADD CONSTRAINT check_policy_type 
-CHECK (policy_type IN ('privacy_policy', 'ai_usage_policy', 'ai_governance_policy'));
-```
-
+CREATE TABLE public.user_policies (
+id uuid NOT NULL DEFAULT uuid_generate_v4(),
+user_id uuid,
+policy_type text NOT NULL,
+content text,
+source_questionnaire_id uuid,
+created_at timestamp with time zone DEFAULT timezone('utc'::text, now()),
+version_number integer DEFAULT 1,
+parent_version_id uuid,
+framework_coverage jsonb,
+CONSTRAINT user_policies_pkey PRIMARY KEY (id),
+CONSTRAINT user_policies_parent_version_id_fkey FOREIGN KEY (parent_version_id) REFERENCES public.user_policies(id),
+CONSTRAINT user_policies_source_questionnaire_id_fkey FOREIGN KEY (source_questionnaire_id) REFERENCES public.user_questionnaires(id),
+CONSTRAINT user_policies_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id)
+);
+CREATE TABLE public.user_questionnaire (
+id uuid NOT NULL DEFAULT uuid_generate_v4(),
+user_id uuid,
+policy_type text NOT NULL,
+responses jsonb,
+created_at timestamp with time zone DEFAULT timezone('utc'::text, now()),
+status text DEFAULT 'draft'::text CHECK (status = ANY (ARRAY['draft'::text, 'final'::text])),
+updated_at timestamp with time zone NOT NULL DEFAULT now(),
+company_name text,
+CONSTRAINT user_questionnaire_pkey PRIMARY KEY (id),
+CONSTRAINT user_questionnaire_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id)
+);
+CREATE TABLE public.user_questionnaires (
+id uuid NOT NULL DEFAULT gen_random_uuid(),
+user_id uuid NOT NULL,
+policy_type text NOT NULL CHECK (policy_type = ANY (ARRAY['privacy_policy'::text, 'ai_usage_policy'::text, 'ai_governance_policy'::text])),
+status text NOT NULL CHECK (status = ANY (ARRAY['draft'::text, 'final'::text])),
+answers jsonb NOT NULL DEFAULT '{}'::jsonb,
+created_at timestamp with time zone NOT NULL DEFAULT now(),
+updated_at timestamp with time zone NOT NULL DEFAULT now(),
+CONSTRAINT user_questionnaires_pkey PRIMARY KEY (id)
+);

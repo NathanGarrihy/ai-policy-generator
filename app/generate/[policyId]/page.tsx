@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { buildPrompt } from "@/lib/prompts";
 import { analyzePolicyCompliance, extractMappings } from "@/lib/policycop";
+import { extractMappingsFromMetadata } from "@/lib/parser";
 import ReactMarkdown from "react-markdown";
 import ExportButton from "@/components/ExportButton";
 
@@ -67,19 +68,28 @@ export default function GeneratePolicyPage() {
 
         if (qError) {
           console.error("Error fetching questionnaire:", qError);
-          setError(`Error fetching questionnaire: ${qError.message || "Unknown error"}`);
+          setError(
+            `Error fetching questionnaire: ${qError.message || "Unknown error"}`
+          );
           setLoading(false);
           return;
         }
 
         if (!qData || !qData.id) {
-          setError(`No ${policyType} questionnaire data found. Please complete the questionnaire first.`);
+          setError(
+            `No ${policyType} questionnaire data found. Please complete the questionnaire first.`
+          );
           setLoading(false);
           return;
         }
 
         // Verify the questionnaire ID exists before using it
-        console.log("Using questionnaire ID:", qData.id, "for policy type:", policyType);
+        console.log(
+          "Using questionnaire ID:",
+          qData.id,
+          "for policy type:",
+          policyType
+        );
 
         const prompt = buildPrompt(policyId, qData.answers);
 
@@ -89,27 +99,49 @@ export default function GeneratePolicyPage() {
           body: JSON.stringify({ prompt }),
         });
         if (!res.ok) {
-          const errorData = await res.json().catch(() => ({ error: "Unknown error" }));
-          throw new Error(errorData.error || `Generate API ${res.status}: Failed to generate policy`);
+          const errorData = await res
+            .json()
+            .catch(() => ({ error: "Unknown error" }));
+          throw new Error(
+            errorData.error ||
+              `Generate API ${res.status}: Failed to generate policy`
+          );
         }
         const result = await res.json();
 
         if (!result || !result.content) {
-          const errorMsg = result?.error || "Failed to generate policy. No content was returned.";
+          const errorMsg =
+            result?.error ||
+            "Failed to generate policy. No content was returned.";
           setError(errorMsg);
           setLoading(false);
           return;
         }
 
+        // Content is already parsed by the API (POLICY-MARKDOWN block extracted)
         const generatedContent = result.content;
         setPolicyText(generatedContent);
 
-        // Run PolicyCop analysis
+        // Run PolicyCop analysis on the clean content
         const complianceResult = analyzePolicyCompliance(generatedContent);
         setPolicyCopResult(complianceResult);
 
-        // Extract mappings
-        const mappings = extractMappings(generatedContent);
+        // Extract mappings - prefer METAJSON if available, fallback to regex extraction
+        let mappings: Array<{
+          section_id: string;
+          framework: "GDPR" | "AI_ACT" | "ISO_42001";
+          article_ref: string;
+        }> = [];
+
+        if (result.metadata) {
+          // Use mappings from METAJSON if available
+          mappings = extractMappingsFromMetadata(result.metadata);
+        }
+
+        // Fallback to regex extraction if no metadata or no mappings found
+        if (mappings.length === 0) {
+          mappings = extractMappings(generatedContent);
+        }
 
         // Get latest version number for this policy type
         const { data: latestPolicy } = await supabase
@@ -134,9 +166,12 @@ export default function GeneratePolicyPage() {
           .maybeSingle();
 
         let questionnaireIdToUse: string | null = null;
-        
+
         if (verifyError || !verifyQ) {
-          console.warn("Questionnaire verification failed or not accessible:", verifyError);
+          console.warn(
+            "Questionnaire verification failed or not accessible:",
+            verifyError
+          );
           console.warn("Attempted to use questionnaire ID:", qData.id);
           // If questionnaire is not accessible, try to set source_questionnaire_id to null
           // This requires the column to be nullable, otherwise we'll get a constraint error
@@ -200,7 +235,10 @@ export default function GeneratePolicyPage() {
         setLoading(false);
       } catch (e: any) {
         console.error("Error generating policy:", e);
-        setError(e.message || "An unexpected error occurred while generating the policy.");
+        setError(
+          e.message ||
+            "An unexpected error occurred while generating the policy."
+        );
         setLoading(false);
       }
     };
@@ -215,7 +253,9 @@ export default function GeneratePolicyPage() {
       {loading && (
         <div className="text-center py-8">
           <p className="text-lg">Generating with AI...</p>
-          <p className="text-sm text-neutral-500 mt-2">This may take up to 25 seconds</p>
+          <p className="text-sm text-neutral-500 mt-2">
+            This may take up to 25 seconds
+          </p>
         </div>
       )}
       {error && (
@@ -229,8 +269,12 @@ export default function GeneratePolicyPage() {
           <h2 className="text-lg font-semibold">PolicyCop Compliance Score</h2>
           <div className="grid grid-cols-3 gap-4">
             <div>
-              <div className="text-sm text-neutral-600 dark:text-neutral-400">GDPR</div>
-              <div className="text-2xl font-bold">{Math.round(policyCopResult.gdpr_coverage * 100)}%</div>
+              <div className="text-sm text-neutral-600 dark:text-neutral-400">
+                GDPR
+              </div>
+              <div className="text-2xl font-bold">
+                {Math.round(policyCopResult.gdpr_coverage * 100)}%
+              </div>
               <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full h-2 mt-1">
                 <div
                   className="bg-green-600 h-2 rounded-full"
@@ -239,8 +283,12 @@ export default function GeneratePolicyPage() {
               </div>
             </div>
             <div>
-              <div className="text-sm text-neutral-600 dark:text-neutral-400">AI Act</div>
-              <div className="text-2xl font-bold">{Math.round(policyCopResult.ai_act_coverage * 100)}%</div>
+              <div className="text-sm text-neutral-600 dark:text-neutral-400">
+                AI Act
+              </div>
+              <div className="text-2xl font-bold">
+                {Math.round(policyCopResult.ai_act_coverage * 100)}%
+              </div>
               <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full h-2 mt-1">
                 <div
                   className="bg-blue-600 h-2 rounded-full"
@@ -249,12 +297,18 @@ export default function GeneratePolicyPage() {
               </div>
             </div>
             <div>
-              <div className="text-sm text-neutral-600 dark:text-neutral-400">ISO 42001</div>
-              <div className="text-2xl font-bold">{Math.round(policyCopResult.iso_42001_coverage * 100)}%</div>
+              <div className="text-sm text-neutral-600 dark:text-neutral-400">
+                ISO 42001
+              </div>
+              <div className="text-2xl font-bold">
+                {Math.round(policyCopResult.iso_42001_coverage * 100)}%
+              </div>
               <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full h-2 mt-1">
                 <div
                   className="bg-purple-600 h-2 rounded-full"
-                  style={{ width: `${policyCopResult.iso_42001_coverage * 100}%` }}
+                  style={{
+                    width: `${policyCopResult.iso_42001_coverage * 100}%`,
+                  }}
                 />
               </div>
             </div>
@@ -265,11 +319,14 @@ export default function GeneratePolicyPage() {
                 Missing required clauses:
               </p>
               <ul className="list-disc list-inside text-sm mt-1 space-y-1">
-                {policyCopResult.missing_clauses.slice(0, 5).map((clause: any, idx: number) => (
-                  <li key={idx}>
-                    {clause.framework} {clause.article_ref}: {clause.clause_text}
-                  </li>
-                ))}
+                {policyCopResult.missing_clauses
+                  .slice(0, 5)
+                  .map((clause: any, idx: number) => (
+                    <li key={idx}>
+                      {clause.framework} {clause.article_ref}:{" "}
+                      {clause.clause_text}
+                    </li>
+                  ))}
               </ul>
             </div>
           )}
