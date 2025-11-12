@@ -57,19 +57,29 @@ export default function GeneratePolicyPage() {
         // Get most recent questionnaire for this policy type
         const { data: qData, error: qError } = await supabase
           .from("user_questionnaires")
-          .select("*")
+          .select("id, answers, policy_type, status")
           .eq("user_id", user.id)
           .eq("policy_type", policyType)
           .eq("status", "final")
           .order("created_at", { ascending: false })
           .limit(1)
-          .single();
+          .maybeSingle();
 
-        if (qError || !qData) {
+        if (qError) {
+          console.error("Error fetching questionnaire:", qError);
+          setError(`Error fetching questionnaire: ${qError.message || "Unknown error"}`);
+          setLoading(false);
+          return;
+        }
+
+        if (!qData || !qData.id) {
           setError(`No ${policyType} questionnaire data found. Please complete the questionnaire first.`);
           setLoading(false);
           return;
         }
+
+        // Verify the questionnaire ID exists before using it
+        console.log("Using questionnaire ID:", qData.id, "for policy type:", policyType);
 
         const prompt = buildPrompt(policyId, qData.answers);
 
@@ -115,6 +125,27 @@ export default function GeneratePolicyPage() {
         const parentVersionId = latestPolicy?.id || null;
         setVersionNumber(nextVersion);
 
+        // Verify questionnaire still exists and is accessible before saving policy
+        const { data: verifyQ, error: verifyError } = await supabase
+          .from("user_questionnaires")
+          .select("id")
+          .eq("id", qData.id)
+          .eq("user_id", user.id)
+          .maybeSingle();
+
+        let questionnaireIdToUse: string | null = null;
+        
+        if (verifyError || !verifyQ) {
+          console.warn("Questionnaire verification failed or not accessible:", verifyError);
+          console.warn("Attempted to use questionnaire ID:", qData.id);
+          // If questionnaire is not accessible, try to set source_questionnaire_id to null
+          // This requires the column to be nullable, otherwise we'll get a constraint error
+          // For now, we'll still try to use the ID but log the warning
+          questionnaireIdToUse = qData.id; // Try anyway, will fail with better error message
+        } else {
+          questionnaireIdToUse = qData.id;
+        }
+
         // Save policy with versioning
         const { data: savedPolicy, error: saveError } = await supabase
           .from("user_policies")
@@ -129,7 +160,7 @@ export default function GeneratePolicyPage() {
               ai_act_coverage: complianceResult.ai_act_coverage,
               iso_42001_coverage: complianceResult.iso_42001_coverage,
             },
-            source_questionnaire_id: qData.id,
+            source_questionnaire_id: questionnaireIdToUse,
           })
           .select("id")
           .single();

@@ -11,7 +11,12 @@ const AI_USED_WHERE = ["support", "content", "analytics", "coding"] as const;
 const AI_PROVIDERS = ["OpenAI", "Anthropic", "open-source", "other"] as const;
 const OVERSIGHT_LEVELS = ["low", "medium", "high"] as const;
 const RISK_RATINGS = ["low", "medium", "high"] as const;
-const RETRAINING_FREQ = ["never", "quarterly", "annually", "as-needed"] as const;
+const RETRAINING_FREQ = [
+  "never",
+  "quarterly",
+  "annually",
+  "as-needed",
+] as const;
 
 export default function AIUsageQuestionnairePage() {
   const router = useRouter();
@@ -240,7 +245,9 @@ export default function AIUsageQuestionnairePage() {
 
       {step === 5 && (
         <div className="space-y-2">
-          <div className="text-sm font-medium">What is your AI risk rating?</div>
+          <div className="text-sm font-medium">
+            What is your AI risk rating?
+          </div>
           <select
             className="rounded border p-2 w-full"
             value={answers.ai_risk_rating}
@@ -277,7 +284,9 @@ export default function AIUsageQuestionnairePage() {
           >
             {RETRAINING_FREQ.map((f) => (
               <option key={f} value={f}>
-                {f === "as-needed" ? "As Needed" : f.charAt(0).toUpperCase() + f.slice(1)}
+                {f === "as-needed"
+                  ? "As Needed"
+                  : f.charAt(0).toUpperCase() + f.slice(1)}
               </option>
             ))}
           </select>
@@ -330,4 +339,3 @@ export default function AIUsageQuestionnairePage() {
     </div>
   );
 }
-
