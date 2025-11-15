@@ -46,11 +46,13 @@ export async function generatePDF(
 ): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.create();
   const timesRomanFont = await pdfDoc.embedFont(StandardFonts.TimesRoman);
-  const timesRomanBoldFont = await pdfDoc.embedFont(StandardFonts.TimesRomanBold);
+  const timesRomanBoldFont = await pdfDoc.embedFont(
+    StandardFonts.TimesRomanBold
+  );
   const helveticaFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const helveticaBoldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  const pageSize = [595, 842]; // A4 size
+  const pageSize: [number, number] = [595, 842]; // A4 size
   let page = pdfDoc.addPage(pageSize);
   const { width, height } = page.getSize();
   let yPosition = height - 50;
@@ -157,7 +159,10 @@ export async function generatePDF(
         let currentLine = "";
         for (const word of words) {
           const testLine = currentLine + (currentLine ? " " : "") + word;
-          const textWidth = timesRomanFont.widthOfTextAtSize(testLine, fontSize);
+          const textWidth = timesRomanFont.widthOfTextAtSize(
+            testLine,
+            fontSize
+          );
           if (textWidth > width - margin * 2 && currentLine) {
             page.drawText(currentLine, {
               x: margin,
@@ -292,7 +297,10 @@ export async function generatePDF(
 
       // Wrap section_id if needed
       const sectionId = mapping.section_id;
-      const sectionIdWidth = helveticaFont.widthOfTextAtSize(sectionId, fontSize - 1);
+      const sectionIdWidth = helveticaFont.widthOfTextAtSize(
+        sectionId,
+        fontSize - 1
+      );
       if (sectionIdWidth > colWidths[2] - 10) {
         // Truncate with ellipsis
         let truncated = sectionId;
@@ -337,25 +345,32 @@ export async function generatePDF(
     // Draw version history table
     const rowHeight = 25;
     const headerHeight = 30;
+    const availableWidth = width - margin * 2;
     const colWidths = [
-      60, // Version
-      80, // Date
-      90, // GDPR
-      90, // AI Act
-      90, // ISO 42001
-      70, // GDPR Δ
-      70, // AI Act Δ
-      70, // ISO 42001 Δ
+      45, // Version
+      65, // Date
+      70, // GDPR
+      70, // AI Act
+      70, // ISO 42001
+      55, // GDPR Delta
+      55, // AI Act Delta
+      55, // ISO Delta
     ];
     const totalTableWidth = colWidths.reduce((a, b) => a + b, 0);
-    const tableStartX = margin + (width - margin * 2 - totalTableWidth) / 2;
+    // Ensure table fits within available width
+    const scaleFactor =
+      totalTableWidth > availableWidth ? availableWidth / totalTableWidth : 1;
+    const scaledColWidths =
+      scaleFactor < 1 ? colWidths.map((w) => w * scaleFactor) : colWidths;
+    const scaledTotalWidth = scaledColWidths.reduce((a, b) => a + b, 0);
+    const tableStartX = margin;
 
     // Draw table header
     const headerBgColor = rgb(0.9, 0.9, 0.9);
     page.drawRectangle({
       x: tableStartX,
       y: yPosition - headerHeight,
-      width: totalTableWidth,
+      width: scaledTotalWidth,
       height: headerHeight,
       color: headerBgColor,
     });
@@ -367,26 +382,43 @@ export async function generatePDF(
       "Date",
       "GDPR %",
       "AI Act %",
-      "ISO 42001 %",
-      "GDPR Δ",
-      "AI Act Δ",
-      "ISO Δ",
+      "ISO %",
+      "GDPR d",
+      "AI Act d",
+      "ISO d",
     ];
     headers.forEach((header, idx) => {
-      page.drawText(header, {
+      const cellWidth = scaledColWidths[idx];
+      // Truncate header if needed
+      let displayHeader = header;
+      const headerWidth = helveticaBoldFont.widthOfTextAtSize(
+        header,
+        fontSize - 2
+      );
+      if (headerWidth > cellWidth - 6) {
+        let truncated = header;
+        while (
+          helveticaBoldFont.widthOfTextAtSize(truncated + "...", fontSize - 2) >
+          cellWidth - 6
+        ) {
+          truncated = truncated.slice(0, -1);
+        }
+        displayHeader = truncated + "...";
+      }
+      page.drawText(displayHeader, {
         x: currentX + 3,
         y: yPosition - 20,
         size: fontSize - 2,
         font: helveticaBoldFont,
       });
-      currentX += colWidths[idx];
+      currentX += cellWidth;
     });
 
     // Draw header border
     page.drawRectangle({
       x: tableStartX,
       y: yPosition - headerHeight,
-      width: totalTableWidth,
+      width: scaledTotalWidth,
       height: headerHeight,
       borderColor: rgb(0, 0, 0),
       borderWidth: 1,
@@ -406,7 +438,7 @@ export async function generatePDF(
         page.drawRectangle({
           x: tableStartX,
           y: rowY,
-          width: totalTableWidth,
+          width: scaledTotalWidth,
           height: rowHeight,
           color: rgb(0.98, 0.98, 0.98),
         });
@@ -416,7 +448,7 @@ export async function generatePDF(
       page.drawRectangle({
         x: tableStartX,
         y: rowY,
-        width: totalTableWidth,
+        width: scaledTotalWidth,
         height: rowHeight,
         borderColor: rgb(0.7, 0.7, 0.7),
         borderWidth: 0.5,
@@ -451,26 +483,42 @@ export async function generatePDF(
             idx === 5
               ? version.coverageDelta.gdpr
               : idx === 6
-                ? version.coverageDelta.ai_act
-                : version.coverageDelta.iso_42001;
+              ? version.coverageDelta.ai_act
+              : version.coverageDelta.iso_42001;
           if (deltaValue !== undefined) {
             textColor =
               deltaValue > 0
                 ? rgb(0, 0.6, 0)
                 : deltaValue < 0
-                  ? rgb(0.8, 0, 0)
-                  : rgb(0, 0, 0);
+                ? rgb(0.8, 0, 0)
+                : rgb(0, 0, 0);
           }
         }
 
-        page.drawText(text, {
+        const cellWidth = scaledColWidths[idx];
+        // Truncate text if it's too wide for the cell
+        let displayText = text;
+        const textWidth = helveticaFont.widthOfTextAtSize(text, fontSize - 2);
+        if (textWidth > cellWidth - 6) {
+          // Truncate with ellipsis
+          let truncated = text;
+          while (
+            helveticaFont.widthOfTextAtSize(truncated + "...", fontSize - 2) >
+            cellWidth - 6
+          ) {
+            truncated = truncated.slice(0, -1);
+          }
+          displayText = truncated + "...";
+        }
+
+        page.drawText(displayText, {
           x: currentX + 3,
           y: rowY + 7,
           size: fontSize - 2,
           font: idx === 0 ? helveticaBoldFont : helveticaFont,
           color: textColor,
         });
-        currentX += colWidths[idx];
+        currentX += cellWidth;
       });
 
       yPosition -= rowHeight;
@@ -482,7 +530,10 @@ export async function generatePDF(
   pages.forEach((p, index) => {
     const pageNum = index + 1;
     const pageNumText = `Page ${pageNum}`;
-    const textWidth = helveticaFont.widthOfTextAtSize(pageNumText, fontSize - 2);
+    const textWidth = helveticaFont.widthOfTextAtSize(
+      pageNumText,
+      fontSize - 2
+    );
     p.drawText(pageNumText, {
       x: width - margin - textWidth,
       y: 30,
@@ -831,7 +882,7 @@ export async function generateDOCX(
               new Paragraph({
                 children: [
                   new TextRun({
-                    text: "GDPR Δ",
+                    text: "GDPR Delta",
                     bold: true,
                   }),
                 ],
@@ -846,7 +897,7 @@ export async function generateDOCX(
               new Paragraph({
                 children: [
                   new TextRun({
-                    text: "AI Act Δ",
+                    text: "AI Act Delta",
                     bold: true,
                   }),
                 ],
@@ -861,7 +912,7 @@ export async function generateDOCX(
               new Paragraph({
                 children: [
                   new TextRun({
-                    text: "ISO Δ",
+                    text: "ISO Delta",
                     bold: true,
                   }),
                 ],
@@ -969,8 +1020,8 @@ export async function generateDOCX(
                           ? gdprDelta > 0
                             ? "006600"
                             : gdprDelta < 0
-                              ? "CC0000"
-                              : "000000"
+                            ? "CC0000"
+                            : "000000"
                           : "000000",
                     }),
                   ],
@@ -990,8 +1041,8 @@ export async function generateDOCX(
                           ? aiActDelta > 0
                             ? "006600"
                             : aiActDelta < 0
-                              ? "CC0000"
-                              : "000000"
+                            ? "CC0000"
+                            : "000000"
                           : "000000",
                     }),
                   ],
@@ -1011,8 +1062,8 @@ export async function generateDOCX(
                           ? isoDelta > 0
                             ? "006600"
                             : isoDelta < 0
-                              ? "CC0000"
-                              : "000000"
+                            ? "CC0000"
+                            : "000000"
                           : "000000",
                     }),
                   ],
