@@ -41,7 +41,7 @@ export function parsePolicySections(policyContent: string): Array<{
 }> {
   const sections: Array<{ name: string; content: string }> = [];
   const lines = policyContent.split("\n");
-  
+
   let currentSection: { name: string; content: string } | null = null;
   let currentContent: string[] = [];
   let hasSeenHeading = false;
@@ -50,16 +50,16 @@ export function parsePolicySections(policyContent: string): Array<{
     const line = lines[i];
     // Match H2 (##) or H3 (###) headings
     const headingMatch = line.match(/^(##|###)\s+(.+)$/);
-    
+
     if (headingMatch) {
       hasSeenHeading = true;
-      
+
       // Save previous section if it exists
       if (currentSection) {
         currentSection.content = currentContent.join("\n").trim();
         sections.push(currentSection);
       }
-      
+
       // Start new section
       const sectionName = headingMatch[2].trim();
       currentSection = { name: sectionName, content: "" };
@@ -102,9 +102,11 @@ export function parsePolicySections(policyContent: string): Array<{
 
 /**
  * Analyzes a single section's compliance against all frameworks
+ * Uses context-aware matching for better accuracy
  */
 function analyzeSectionCompliance(
-  sectionContent: string
+  sectionContent: string,
+  sectionName?: string
 ): {
   gdpr_coverage: number;
   ai_act_coverage: number;
@@ -118,22 +120,44 @@ function analyzeSectionCompliance(
 } {
   const contentLower = sectionContent.toLowerCase();
 
-  // Check GDPR rules
-  const gdprMatches = checkRules(GDPR_RULES, contentLower);
+  // Prioritize rules based on section context (if section name provided)
+  const prioritizedGdprRules = sectionName
+    ? prioritizeRulesBySection(GDPR_RULES, sectionName)
+    : GDPR_RULES;
+  const prioritizedAiActRules = sectionName
+    ? prioritizeRulesBySection(AI_ACT_RULES, sectionName)
+    : AI_ACT_RULES;
+  const prioritizedIsoRules = sectionName
+    ? prioritizeRulesBySection(ISO_42001_RULES, sectionName)
+    : ISO_42001_RULES;
+
+  // Check GDPR rules with context-aware matching
+  const gdprMatches = prioritizedGdprRules.map(
+    (rule) => checkRuleWithContext(rule, contentLower, sectionName).matched
+  );
   const gdprCoverage = calculateCoverage(gdprMatches, GDPR_RULES);
 
-  // Check AI Act rules
-  const aiActMatches = checkRules(AI_ACT_RULES, contentLower);
+  // Check AI Act rules with context-aware matching
+  const aiActMatches = prioritizedAiActRules.map(
+    (rule) => checkRuleWithContext(rule, contentLower, sectionName).matched
+  );
   const aiActCoverage = calculateCoverage(aiActMatches, AI_ACT_RULES);
 
-  // Check ISO 42001 rules
-  const isoMatches = checkRules(ISO_42001_RULES, contentLower);
+  // Check ISO 42001 rules with context-aware matching
+  const isoMatches = prioritizedIsoRules.map(
+    (rule) => checkRuleWithContext(rule, contentLower, sectionName).matched
+  );
   const isoCoverage = calculateCoverage(isoMatches, ISO_42001_RULES);
 
   // Find missing clauses (required ones that weren't found)
+  // Use context-aware matching to reduce false positives
   const missingClauses = ALL_RULES.filter((rule) => {
     if (!rule.required) return false;
-    const matched = checkRule(rule, contentLower);
+    const matched = checkRuleWithContext(
+      rule,
+      contentLower,
+      sectionName
+    ).matched;
     return !matched;
   }).map((rule) => ({
     framework: rule.framework,
@@ -162,10 +186,10 @@ export function analyzePolicyCompliance(
   // Parse policy into sections
   const sections = parsePolicySections(policyContent);
 
-  // Analyze each section
+  // Analyze each section with context-aware matching
   const sectionScores = sections.map((section) => ({
     section_name: section.name,
-    ...analyzeSectionCompliance(section.content),
+    ...analyzeSectionCompliance(section.content, section.name),
   }));
 
   // Calculate overall scores (aggregate from sections)
@@ -181,9 +205,10 @@ export function analyzePolicyCompliance(
   const isoCoverage = calculateCoverage(isoMatches, ISO_42001_RULES);
 
   // Find missing clauses (required ones that weren't found)
+  // Use context-aware matching for consistency with section-level analysis
   const missingClauses = ALL_RULES.filter((rule) => {
     if (!rule.required) return false;
-    const matched = checkRule(rule, contentLower);
+    const matched = checkRuleWithContext(rule, contentLower).matched;
     return !matched;
   }).map((rule) => ({
     framework: rule.framework,
@@ -210,25 +235,40 @@ export function analyzePolicyCompliance(
  */
 const SYNONYMS: Record<string, string[]> = {
   "data subject": ["individual", "user", "person", "data subject", "subject"],
-  "individual": ["data subject", "user", "person", "individual"],
-  "user": ["data subject", "individual", "person", "user"],
-  "personal data": ["personal information", "personal data", "pii", "personally identifiable information"],
-  "processing": ["process", "processing", "handling", "managing"],
-  "consent": ["consent", "permission", "authorization", "agreement"],
-  "erasure": ["deletion", "erasure", "removal", "deleting"],
-  "rectification": ["correction", "rectification", "updating", "amending"],
-  "portability": ["portability", "export", "transfer", "migration"],
+  individual: ["data subject", "user", "person", "individual"],
+  user: ["data subject", "individual", "person", "user"],
+  "personal data": [
+    "personal information",
+    "personal data",
+    "pii",
+    "personally identifiable information",
+  ],
+  processing: ["process", "processing", "handling", "managing"],
+  consent: ["consent", "permission", "authorization", "agreement"],
+  erasure: ["deletion", "erasure", "removal", "deleting"],
+  rectification: ["correction", "rectification", "updating", "amending"],
+  portability: ["portability", "export", "transfer", "migration"],
 };
 
 /**
  * Abbreviation mapping
  */
 const ABBREVIATIONS: Record<string, string[]> = {
-  "dpo": ["data protection officer", "dpo", "privacy officer"],
-  "dpia": ["data protection impact assessment", "dpia", "privacy impact assessment", "pia"],
-  "pii": ["personally identifiable information", "pii", "personal data", "personal information"],
-  "ai": ["artificial intelligence", "ai", "machine learning", "ml"],
-  "gdpr": ["general data protection regulation", "gdpr", "regulation 2016/679"],
+  dpo: ["data protection officer", "dpo", "privacy officer"],
+  dpia: [
+    "data protection impact assessment",
+    "dpia",
+    "privacy impact assessment",
+    "pia",
+  ],
+  pii: [
+    "personally identifiable information",
+    "pii",
+    "personal data",
+    "personal information",
+  ],
+  ai: ["artificial intelligence", "ai", "machine learning", "ml"],
+  gdpr: ["general data protection regulation", "gdpr", "regulation 2016/679"],
 };
 
 /**
@@ -236,17 +276,22 @@ const ABBREVIATIONS: Record<string, string[]> = {
  */
 function getPluralForms(word: string): string[] {
   const forms = [word];
-  
+
   // Simple pluralization rules
   if (word.endsWith("y")) {
     forms.push(word.slice(0, -1) + "ies");
-  } else if (word.endsWith("s") || word.endsWith("x") || word.endsWith("z") || 
-             word.endsWith("ch") || word.endsWith("sh")) {
+  } else if (
+    word.endsWith("s") ||
+    word.endsWith("x") ||
+    word.endsWith("z") ||
+    word.endsWith("ch") ||
+    word.endsWith("sh")
+  ) {
     forms.push(word + "es");
   } else {
     forms.push(word + "s");
   }
-  
+
   return forms;
 }
 
@@ -255,7 +300,7 @@ function getPluralForms(word: string): string[] {
  */
 function getVerbForms(word: string): string[] {
   const forms = [word];
-  
+
   // Simple verb form rules
   if (word.endsWith("e")) {
     forms.push(word + "d"); // past tense
@@ -271,7 +316,7 @@ function getVerbForms(word: string): string[] {
     forms.push(word + "ed"); // past tense
     forms.push(word + "ing"); // gerund
   }
-  
+
   return forms;
 }
 
@@ -281,53 +326,53 @@ function getVerbForms(word: string): string[] {
 function expandKeyword(keyword: string): string[] {
   const expanded = new Set<string>();
   const keywordLower = keyword.toLowerCase();
-  
+
   // Add original
   expanded.add(keywordLower);
-  
+
   // Add synonyms
   for (const [key, synonyms] of Object.entries(SYNONYMS)) {
     if (keywordLower.includes(key) || key.includes(keywordLower)) {
-      synonyms.forEach(syn => expanded.add(syn));
+      synonyms.forEach((syn) => expanded.add(syn));
     }
   }
-  
+
   // Add abbreviations
   for (const [abbr, expansions] of Object.entries(ABBREVIATIONS)) {
     if (keywordLower === abbr) {
-      expansions.forEach(exp => expanded.add(exp));
+      expansions.forEach((exp) => expanded.add(exp));
     }
-    if (expansions.some(exp => exp === keywordLower)) {
+    if (expansions.some((exp) => exp === keywordLower)) {
       expanded.add(abbr);
-      expansions.forEach(exp => expanded.add(exp));
+      expansions.forEach((exp) => expanded.add(exp));
     }
   }
-  
+
   // Generate variations for each word in the keyword
   const words = keywordLower.split(/\s+/);
-  words.forEach(word => {
+  words.forEach((word) => {
     // Add plural forms
-    getPluralForms(word).forEach(form => {
+    getPluralForms(word).forEach((form) => {
       expanded.add(form);
       // Also add with original context
       if (words.length > 1) {
-        const contextWords = words.filter(w => w !== word);
+        const contextWords = words.filter((w) => w !== word);
         expanded.add([...contextWords, form].join(" "));
         expanded.add([form, ...contextWords].join(" "));
       }
     });
-    
+
     // Add verb forms
-    getVerbForms(word).forEach(form => {
+    getVerbForms(word).forEach((form) => {
       expanded.add(form);
       if (words.length > 1) {
-        const contextWords = words.filter(w => w !== word);
+        const contextWords = words.filter((w) => w !== word);
         expanded.add([...contextWords, form].join(" "));
         expanded.add([form, ...contextWords].join(" "));
       }
     });
   });
-  
+
   // Handle word order variations for multi-word phrases
   if (words.length > 1) {
     // Add reversed order
@@ -337,7 +382,7 @@ function expandKeyword(keyword: string): string[] {
       expanded.add(words[1] + " " + words[0]);
     }
   }
-  
+
   return Array.from(expanded);
 }
 
@@ -347,12 +392,12 @@ function expandKeyword(keyword: string): string[] {
  */
 function createFuzzyPattern(keyword: string): RegExp {
   // Escape special regex characters
-  const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  
+  const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
   // Common typo patterns: missing/extra characters, character swaps
   // For now, we'll use word boundary matching with case-insensitive flag
   // More sophisticated fuzzy matching can be added later
-  return new RegExp(`\\b${escaped}\\b`, 'gi');
+  return new RegExp(`\\b${escaped}\\b`, "gi");
 }
 
 /**
@@ -362,16 +407,19 @@ function createFuzzyPattern(keyword: string): RegExp {
 function matchKeyword(keyword: string, content: string): boolean {
   // Expand keyword to include variations
   const expandedKeywords = expandKeyword(keyword);
-  
+
   // Try exact word boundary match first (most reliable)
   for (const expandedKeyword of expandedKeywords) {
     // Use word boundary regex for exact matches
-    const exactPattern = new RegExp(`\\b${expandedKeyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    const exactPattern = new RegExp(
+      `\\b${expandedKeyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+      "i"
+    );
     if (exactPattern.test(content)) {
       return true;
     }
   }
-  
+
   // Try fuzzy matching for common typos (1-2 character differences)
   // This is a simplified version - can be enhanced with Levenshtein distance
   for (const expandedKeyword of expandedKeywords) {
@@ -380,7 +428,7 @@ function matchKeyword(keyword: string, content: string): boolean {
       return true;
     }
   }
-  
+
   return false;
 }
 
@@ -400,12 +448,15 @@ function extractArticleNumber(articleRef: string): string {
 /**
  * Generates all possible article reference patterns for a given article reference
  */
-function generateArticlePatterns(articleRef: string, framework: "GDPR" | "AI_ACT" | "ISO_42001"): string[] {
+function generateArticlePatterns(
+  articleRef: string,
+  framework: "GDPR" | "AI_ACT" | "ISO_42001"
+): string[] {
   const patterns: string[] = [];
   const articleNum = extractArticleNumber(articleRef);
-  
+
   if (!articleNum) return patterns;
-  
+
   if (framework === "ISO_42001") {
     // ISO format: §8.2, Section 8.2, Clause 8.2, § 8.2, etc.
     patterns.push(
@@ -428,41 +479,470 @@ function generateArticlePatterns(articleRef: string, framework: "GDPR" | "AI_ACT
       `${framework.toLowerCase()} article ${articleNum}`
     );
   }
-  
+
   return patterns;
 }
 
 /**
  * Checks if article reference is found in content, even when split across lines
  */
-function matchArticleReference(articleRef: string, framework: "GDPR" | "AI_ACT" | "ISO_42001", content: string): boolean {
+function matchArticleReference(
+  articleRef: string,
+  framework: "GDPR" | "AI_ACT" | "ISO_42001",
+  content: string
+): boolean {
   const patterns = generateArticlePatterns(articleRef, framework);
-  
+
   // Normalize content: replace newlines and multiple spaces with single space
   const normalizedContent = content.replace(/\s+/g, " ");
-  
+
   for (const pattern of patterns) {
     // Use word boundary matching for article references
     // Allow for optional spaces around punctuation
     const regexPattern = pattern
-      .replace(/\./g, '\\.')
-      .replace(/\s+/g, '\\s*') // Allow flexible spacing
-      .replace(/§/g, '§?'); // Optional section symbol
-    
-    const regex = new RegExp(`\\b${regexPattern}\\b`, 'i');
+      .replace(/\./g, "\\.")
+      .replace(/\s+/g, "\\s*") // Allow flexible spacing
+      .replace(/§/g, "§?"); // Optional section symbol
+
+    const regex = new RegExp(`\\b${regexPattern}\\b`, "i");
     if (regex.test(normalizedContent)) {
       return true;
     }
-    
+
     // Also try without word boundaries for cases like "Art.6" (no space)
-    const loosePattern = pattern.replace(/\s+/g, '\\s*');
-    const looseRegex = new RegExp(loosePattern, 'i');
+    const loosePattern = pattern.replace(/\s+/g, "\\s*");
+    const looseRegex = new RegExp(loosePattern, "i");
     if (looseRegex.test(normalizedContent)) {
       return true;
     }
   }
-  
+
   return false;
+}
+
+// ============================================================================
+// Context-Aware Matching Utilities
+// ============================================================================
+
+/**
+ * Splits content into paragraphs (based on double newlines) or 100-word windows
+ */
+function splitIntoContextWindows(
+  content: string,
+  windowSize: number = 100
+): string[] {
+  // First try to split by paragraphs (double newlines)
+  const paragraphs = content
+    .split(/\n\s*\n/)
+    .filter((p) => p.trim().length > 0);
+
+  if (paragraphs.length > 0) {
+    return paragraphs;
+  }
+
+  // Fallback: split into word-based windows
+  const words = content.split(/\s+/);
+  const windows: string[] = [];
+
+  for (let i = 0; i < words.length; i += windowSize) {
+    windows.push(words.slice(i, i + windowSize).join(" "));
+  }
+
+  return windows;
+}
+
+/**
+ * Finds all positions where a keyword appears in content
+ * Returns array of { keyword, position, windowIndex }
+ */
+function findKeywordPositions(
+  keywords: string[],
+  content: string,
+  windows: string[]
+): Array<{ keyword: string; position: number; windowIndex: number }> {
+  const positions: Array<{
+    keyword: string;
+    position: number;
+    windowIndex: number;
+  }> = [];
+  const normalizedContent = content.toLowerCase();
+
+  for (let windowIndex = 0; windowIndex < windows.length; windowIndex++) {
+    const window = windows[windowIndex].toLowerCase();
+    let windowStart = 0;
+
+    // Calculate the start position of this window in the full content
+    for (let i = 0; i < windowIndex; i++) {
+      windowStart += windows[i].length + 1; // +1 for separator
+    }
+
+    for (const keyword of keywords) {
+      const expandedKeywords = expandKeyword(keyword);
+
+      for (const expandedKeyword of expandedKeywords) {
+        const pattern = new RegExp(
+          `\\b${expandedKeyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+          "gi"
+        );
+        let match;
+
+        while ((match = pattern.exec(window)) !== null) {
+          positions.push({
+            keyword: expandedKeyword,
+            position: windowStart + match.index,
+            windowIndex,
+          });
+        }
+      }
+    }
+  }
+
+  return positions;
+}
+
+/**
+ * Finds all positions where an article reference appears in content
+ */
+function findArticlePositions(
+  articleRef: string,
+  framework: "GDPR" | "AI_ACT" | "ISO_42001",
+  content: string,
+  windows: string[]
+): Array<{ position: number; windowIndex: number }> {
+  const positions: Array<{ position: number; windowIndex: number }> = [];
+  const patterns = generateArticlePatterns(articleRef, framework);
+  const normalizedContent = content.toLowerCase();
+
+  for (let windowIndex = 0; windowIndex < windows.length; windowIndex++) {
+    const window = windows[windowIndex].toLowerCase();
+    let windowStart = 0;
+
+    // Calculate the start position of this window in the full content
+    for (let i = 0; i < windowIndex; i++) {
+      windowStart += windows[i].length + 1;
+    }
+
+    for (const pattern of patterns) {
+      const regexPattern = pattern
+        .replace(/\./g, "\\.")
+        .replace(/\s+/g, "\\s*")
+        .replace(/§/g, "§?");
+
+      const regex = new RegExp(regexPattern, "gi");
+      let match;
+
+      while ((match = regex.exec(window)) !== null) {
+        positions.push({
+          position: windowStart + match.index,
+          windowIndex,
+        });
+      }
+    }
+  }
+
+  return positions;
+}
+
+/**
+ * Checks if keywords and article references appear within the same context window
+ * Returns a score from 0 to 1 based on proximity and co-occurrence
+ */
+function checkProximity(
+  keywordPositions: Array<{
+    keyword: string;
+    position: number;
+    windowIndex: number;
+  }>,
+  articlePositions: Array<{ position: number; windowIndex: number }>,
+  maxDistance: number = 100
+): { matched: boolean; score: number } {
+  if (keywordPositions.length === 0 && articlePositions.length === 0) {
+    return { matched: false, score: 0 };
+  }
+
+  // If we have keywords but no article refs, still consider it a match (lower score)
+  if (keywordPositions.length > 0 && articlePositions.length === 0) {
+    return { matched: true, score: 0.5 };
+  }
+
+  // If we have article refs but no keywords, still consider it a match (lower score)
+  if (articlePositions.length > 0 && keywordPositions.length === 0) {
+    return { matched: true, score: 0.5 };
+  }
+
+  // Check if any keyword and article ref appear in the same window
+  let bestScore = 0;
+  let foundMatch = false;
+
+  for (const kwPos of keywordPositions) {
+    for (const artPos of articlePositions) {
+      // Same window = high score
+      if (kwPos.windowIndex === artPos.windowIndex) {
+        foundMatch = true;
+        const distance = Math.abs(kwPos.position - artPos.position);
+        // Score decreases with distance, but same window is always high
+        const score =
+          distance < maxDistance ? 1.0 - (distance / maxDistance) * 0.3 : 0.7;
+        bestScore = Math.max(bestScore, score);
+      }
+    }
+  }
+
+  return {
+    matched:
+      foundMatch || keywordPositions.length > 0 || articlePositions.length > 0,
+    score: bestScore || 0.5,
+  };
+}
+
+/**
+ * Checks if multiple keywords appear in the same context window
+ * Returns the number of unique keywords found in the same window
+ */
+function checkKeywordCoOccurrence(
+  keywords: string[],
+  content: string,
+  windows: string[]
+): { matchedKeywords: string[]; coOccurrenceScore: number } {
+  const keywordPositions = findKeywordPositions(keywords, content, windows);
+
+  // Group positions by window
+  const keywordsByWindow = new Map<number, Set<string>>();
+
+  for (const pos of keywordPositions) {
+    if (!keywordsByWindow.has(pos.windowIndex)) {
+      keywordsByWindow.set(pos.windowIndex, new Set());
+    }
+    keywordsByWindow.get(pos.windowIndex)!.add(pos.keyword);
+  }
+
+  // Find the window with the most keywords
+  let maxKeywords = 0;
+  let bestWindow = -1;
+
+  for (const [windowIndex, keywordSet] of keywordsByWindow.entries()) {
+    if (keywordSet.size > maxKeywords) {
+      maxKeywords = keywordSet.size;
+      bestWindow = windowIndex;
+    }
+  }
+
+  const matchedKeywords =
+    bestWindow >= 0 ? Array.from(keywordsByWindow.get(bestWindow)!) : [];
+
+  // Score based on how many keywords co-occur (normalized by total keywords)
+  const coOccurrenceScore =
+    keywords.length > 0 ? maxKeywords / keywords.length : 0;
+
+  return { matchedKeywords, coOccurrenceScore };
+}
+
+/**
+ * Context-aware rule checking with proximity-based matching
+ * Checks if keywords appear within same paragraph (or 100-word window)
+ * Verifies article references appear near relevant keywords
+ * Scores matches higher when keyword + article ref appear together
+ */
+function checkRuleWithContext(
+  rule: ComplianceRule,
+  content: string,
+  sectionName?: string
+): {
+  matched: boolean;
+  score: number;
+  details: {
+    proximityScore: number;
+    coOccurrenceScore: number;
+    contextScore: number;
+  };
+} {
+  const normalizedContent = content.toLowerCase().replace(/\s+/g, " ");
+
+  // Split content into context windows (paragraphs or 100-word chunks)
+  const windows = splitIntoContextWindows(normalizedContent, 100);
+
+  // Find keyword positions
+  const keywordPositions = findKeywordPositions(
+    rule.keywords,
+    normalizedContent,
+    windows
+  );
+
+  // Find article reference positions
+  const articlePositions = findArticlePositions(
+    rule.article_ref,
+    rule.framework,
+    normalizedContent,
+    windows
+  );
+
+  // Check proximity between keywords and article references
+  const proximityResult = checkProximity(
+    keywordPositions,
+    articlePositions,
+    100
+  );
+
+  // Check keyword co-occurrence for semantic relationship detection
+  const coOccurrenceResult = checkKeywordCoOccurrence(
+    rule.keywords,
+    normalizedContent,
+    windows
+  );
+
+  // For complex rules (multiple keywords), require higher co-occurrence
+  const isComplexRule = rule.keywords.length >= 3;
+  const minCoOccurrenceThreshold = isComplexRule ? 0.5 : 0.3;
+
+  // Calculate context score based on section name (if provided)
+  let contextScore = 1.0;
+  if (sectionName) {
+    contextScore = calculateSectionContextScore(rule, sectionName);
+  }
+
+  // Combine scores: proximity, co-occurrence, and context
+  const finalScore =
+    proximityResult.score * 0.4 +
+    coOccurrenceResult.coOccurrenceScore * 0.4 +
+    contextScore * 0.2;
+
+  // Determine if rule matches
+  // Allow matches when:
+  // 1. Keywords are found AND co-occurrence threshold is met, OR
+  // 2. Article references are found (even without keywords)
+  const hasArticleRefs = articlePositions.length > 0;
+  const hasKeywordsWithCoOccurrence =
+    coOccurrenceResult.coOccurrenceScore >= minCoOccurrenceThreshold;
+  const matched =
+    proximityResult.matched && (hasKeywordsWithCoOccurrence || hasArticleRefs);
+
+  return {
+    matched,
+    score: finalScore,
+    details: {
+      proximityScore: proximityResult.score,
+      coOccurrenceScore: coOccurrenceResult.coOccurrenceScore,
+      contextScore,
+    },
+  };
+}
+
+/**
+ * Calculates how semantically related a rule is to a section heading
+ * Returns a score from 0 to 1, where 1 means highly related
+ */
+function calculateSectionContextScore(
+  rule: ComplianceRule,
+  sectionName: string
+): number {
+  const sectionLower = sectionName.toLowerCase();
+  const clauseLower = rule.clause_text.toLowerCase();
+
+  // Extract key terms from section name and clause text
+  const sectionTerms = sectionLower
+    .split(/\s+/)
+    .filter((term) => term.length > 3);
+  const clauseTerms = clauseLower
+    .split(/\s+/)
+    .filter((term) => term.length > 3);
+
+  // Check for semantic relationships
+  const semanticMappings: Record<string, string[]> = {
+    cookie: ["consent", "tracking", "storage"],
+    "data collection": [
+      "processing",
+      "personal data",
+      "lawful basis",
+      "consent",
+    ],
+    "data processing": [
+      "lawful basis",
+      "processing",
+      "personal data",
+      "legal basis",
+    ],
+    privacy: ["data protection", "personal data", "rights", "gdpr"],
+    rights: [
+      "data subject",
+      "access",
+      "erasure",
+      "rectification",
+      "portability",
+    ],
+    security: ["data protection", "security measures", "breach", "encryption"],
+    breach: ["data breach", "notification", "incident", "security"],
+    ai: [
+      "artificial intelligence",
+      "machine learning",
+      "ai system",
+      "algorithm",
+    ],
+    risk: ["risk management", "risk assessment", "high-risk", "mitigation"],
+    transparency: [
+      "information",
+      "disclosure",
+      "explainability",
+      "documentation",
+    ],
+  };
+
+  // Check if section terms match semantic mappings
+  let matchScore = 0;
+  let matchCount = 0;
+
+  for (const sectionTerm of sectionTerms) {
+    for (const [key, relatedTerms] of Object.entries(semanticMappings)) {
+      if (sectionTerm.includes(key) || key.includes(sectionTerm)) {
+        // Check if rule keywords or clause text contain related terms
+        const ruleText = (
+          rule.keywords.join(" ") +
+          " " +
+          clauseLower
+        ).toLowerCase();
+        for (const relatedTerm of relatedTerms) {
+          if (ruleText.includes(relatedTerm)) {
+            matchScore += 1.0;
+            matchCount++;
+            break;
+          }
+        }
+      }
+    }
+
+    // Direct keyword match in section name
+    for (const keyword of rule.keywords) {
+      if (
+        sectionLower.includes(keyword.toLowerCase()) ||
+        keyword.toLowerCase().includes(sectionTerm)
+      ) {
+        matchScore += 0.8;
+        matchCount++;
+      }
+    }
+  }
+
+  // Normalize score (max 1.0)
+  return matchCount > 0 ? Math.min(1.0, matchScore / matchCount) : 0.5;
+}
+
+/**
+ * Filters and prioritizes rules based on section context
+ * Rules semantically related to the section topic are prioritized
+ */
+function prioritizeRulesBySection(
+  rules: ComplianceRule[],
+  sectionName: string
+): ComplianceRule[] {
+  // Calculate context scores for all rules
+  const rulesWithScores = rules.map((rule) => ({
+    rule,
+    contextScore: calculateSectionContextScore(rule, sectionName),
+  }));
+
+  // Sort by context score (highest first)
+  rulesWithScores.sort((a, b) => b.contextScore - a.contextScore);
+
+  return rulesWithScores.map((item) => item.rule);
 }
 
 // ============================================================================
@@ -476,20 +956,33 @@ function checkRules(rules: ComplianceRule[], content: string): boolean[] {
 function checkRule(rule: ComplianceRule, content: string): boolean {
   // Normalize content: lowercase and normalize whitespace
   const normalizedContent = content.toLowerCase().replace(/\s+/g, " ");
-  
+
   // Check keyword matches with enhanced matching
   const keywordMatch = rule.keywords.some((keyword) =>
     matchKeyword(keyword, normalizedContent)
   );
-  
+
   // Check article reference matches with enhanced pattern matching
   const articleMatch = matchArticleReference(
     rule.article_ref,
     rule.framework,
     normalizedContent
   );
-  
+
   return keywordMatch || articleMatch;
+}
+
+/**
+ * Context-aware rule checking (uses proximity and semantic analysis)
+ * This is the enhanced version that should be used for better accuracy
+ */
+function checkRuleWithContextOnly(
+  rule: ComplianceRule,
+  content: string,
+  sectionName?: string
+): boolean {
+  const result = checkRuleWithContext(rule, content, sectionName);
+  return result.matched;
 }
 
 function calculateCoverage(
@@ -522,14 +1015,15 @@ export function extractMappings(policyContent: string): Array<{
 
   // Normalize content: replace newlines with spaces to handle split references
   const normalizedContent = policyContent.replace(/\s+/g, " ");
-  
+
   // Enhanced patterns for different frameworks and formats
   // GDPR patterns: Art. 6, Article 6, Art 6, Art.6
   const gdprPattern = /\(GDPR\s+(?:Art\.|Article|Art)\s*([\d\.]+)[^)]*\)/gi;
-  
+
   // AI Act patterns: Art. 9, Article 9, Art 9, Art.9
-  const aiActPattern = /\(AI\s+Act\s+(?:Art\.|Article|Art)\s*([\d\.]+)[^)]*\)/gi;
-  
+  const aiActPattern =
+    /\(AI\s+Act\s+(?:Art\.|Article|Art)\s*([\d\.]+)[^)]*\)/gi;
+
   // ISO 42001 patterns: §8.2, Section 8.2, Clause 8.2
   const isoPatterns = [
     /\(ISO\s*42001\s+(?:§|Section|Clause)\s*([\d\.]+)[^)]*\)/gi,
@@ -555,7 +1049,7 @@ export function extractMappings(policyContent: string): Array<{
         article_ref: `Art. ${match[1].trim()}`,
       });
     }
-    
+
     // Check AI Act patterns
     aiActPattern.lastIndex = 0; // Reset regex
     while ((match = aiActPattern.exec(line)) !== null) {
@@ -565,9 +1059,9 @@ export function extractMappings(policyContent: string): Array<{
         article_ref: `Art. ${match[1].trim()}`,
       });
     }
-    
+
     // Check ISO patterns
-    isoPatterns.forEach(pattern => {
+    isoPatterns.forEach((pattern) => {
       pattern.lastIndex = 0; // Reset regex
       while ((match = pattern.exec(line)) !== null) {
         mappings.push({
@@ -578,28 +1072,33 @@ export function extractMappings(policyContent: string): Array<{
       }
     });
   });
-  
+
   // Also check normalized content for references that might span lines
   // This is a fallback for cases where references are split
   const allPatterns = [
     { pattern: gdprPattern, framework: "GDPR" as const },
     { pattern: aiActPattern, framework: "AI_ACT" as const },
-    ...isoPatterns.map(p => ({ pattern: p, framework: "ISO_42001" as const })),
+    ...isoPatterns.map((p) => ({
+      pattern: p,
+      framework: "ISO_42001" as const,
+    })),
   ];
-  
+
   // Remove duplicates by checking if we already found this mapping
   const existingMappings = new Set(
-    mappings.map(m => `${m.framework}:${m.article_ref}`)
+    mappings.map((m) => `${m.framework}:${m.article_ref}`)
   );
-  
+
   allPatterns.forEach(({ pattern, framework }) => {
     pattern.lastIndex = 0;
+    let match;
     while ((match = pattern.exec(normalizedContent)) !== null) {
-      const articleRef = framework === "ISO_42001" 
-        ? `§${match[1].trim()}`
-        : `Art. ${match[1].trim()}`;
+      const articleRef =
+        framework === "ISO_42001"
+          ? `§${match[1].trim()}`
+          : `Art. ${match[1].trim()}`;
       const key = `${framework}:${articleRef}`;
-      
+
       if (!existingMappings.has(key)) {
         mappings.push({
           section_id: "document",
@@ -613,4 +1112,3 @@ export function extractMappings(policyContent: string): Array<{
 
   return mappings;
 }
-
