@@ -52,26 +52,72 @@ export async function POST(req: Request) {
       .select("*")
       .eq("policy_version_id", policy_id);
 
-    // Get version history
+    // Get version history with framework_coverage
     const { data: versions } = await supabase
       .from("user_policies")
-      .select("version_number, created_at")
+      .select("version_number, created_at, framework_coverage")
       .eq("policy_type", policy.policy_type)
       .order("version_number", { ascending: false })
       .limit(10);
 
+    // Build version history with coverage and calculate deltas
     const versionHistory =
-      versions?.map((v) => ({
-        version: v.version_number,
-        date: new Date(v.created_at).toLocaleDateString(),
-        changes: "Policy update",
-      })) || [];
+      versions?.map((v, index) => {
+        const coverage = v.framework_coverage as {
+          gdpr_coverage?: number;
+          ai_act_coverage?: number;
+          iso_42001_coverage?: number;
+        } | null;
+
+        // Calculate coverage delta from previous version
+        let coverageDelta:
+          | {
+              gdpr?: number;
+              ai_act?: number;
+              iso_42001?: number;
+            }
+          | undefined;
+
+        if (index < versions.length - 1) {
+          const prevVersion = versions[index + 1];
+          const prevCoverage = prevVersion.framework_coverage as {
+            gdpr_coverage?: number;
+            ai_act_coverage?: number;
+            iso_42001_coverage?: number;
+          } | null;
+
+          coverageDelta = {
+            gdpr:
+              (coverage?.gdpr_coverage || 0) -
+              (prevCoverage?.gdpr_coverage || 0),
+            ai_act:
+              (coverage?.ai_act_coverage || 0) -
+              (prevCoverage?.ai_act_coverage || 0),
+            iso_42001:
+              (coverage?.iso_42001_coverage || 0) -
+              (prevCoverage?.iso_42001_coverage || 0),
+          };
+        }
+
+        return {
+          version: v.version_number,
+          date: new Date(v.created_at).toLocaleDateString(),
+          changes: "Policy update",
+          coverage: {
+            gdpr: coverage?.gdpr_coverage,
+            ai_act: coverage?.ai_act_coverage,
+            iso_42001: coverage?.iso_42001_coverage,
+          },
+          coverageDelta,
+        };
+      }) || [];
 
     const mappingData =
       mappings?.map((m) => ({
         section_id: m.section_id,
         framework: m.framework,
         article_ref: m.article_ref,
+        confidence: m.confidence || 1.0,
       })) || [];
 
     // Generate file
@@ -84,7 +130,8 @@ export async function POST(req: Request) {
         policy.content,
         companyName,
         mappingData,
-        versionHistory
+        versionHistory,
+        policy.policy_type
       );
       mimeType = "application/pdf";
       filename = `${policy.policy_type}_v${policy.version_number}.pdf`;
@@ -93,7 +140,8 @@ export async function POST(req: Request) {
         policy.content,
         companyName,
         mappingData,
-        versionHistory
+        versionHistory,
+        policy.policy_type
       );
       mimeType =
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document";

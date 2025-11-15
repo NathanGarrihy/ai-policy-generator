@@ -436,11 +436,11 @@ export default function PolicyCop({ result, className = "" }: PolicyCopProps) {
                                         href={docLink}
                                         target="_blank"
                                         rel="noopener noreferrer"
-                                        className="text-xs text-blue-600 dark:text-blue-400 hover:underline hover:text-blue-700 dark:hover:text-blue-300 flex-shrink-0 transition-colors"
+                                        className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex-shrink-0"
                                         title="View framework documentation"
                                       >
                                         <svg
-                                          className="w-4 h-4 transition-colors"
+                                          className="w-4 h-4"
                                           fill="none"
                                           stroke="currentColor"
                                           viewBox="0 0 24 24"
