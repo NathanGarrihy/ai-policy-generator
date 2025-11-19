@@ -651,7 +651,7 @@ function findArticlePositions(
 /**
  * Checks if keywords and article references appear within the same context window
  * Returns a score from 0 to 1 based on proximity and co-occurrence
- * Requires both keywords AND article references for a match
+ * More lenient: allows matches when keywords OR article refs are found (scored lower)
  */
 function checkProximity(
   keywordPositions: Array<{
@@ -666,19 +666,7 @@ function checkProximity(
     return { matched: false, score: 0 };
   }
 
-  // Require BOTH keywords AND article references for a match
-  // If we only have keywords but no article refs, it's NOT a match
-  if (keywordPositions.length > 0 && articlePositions.length === 0) {
-    return { matched: false, score: 0.2 }; // Low score but not a match
-  }
-
-  // If we only have article refs but no keywords, it's NOT a match
-  // Article references alone don't indicate actual clause content
-  if (articlePositions.length > 0 && keywordPositions.length === 0) {
-    return { matched: false, score: 0.2 }; // Low score but not a match
-  }
-
-  // Check if any keyword and article ref appear in the same window
+  // Check if any keyword and article ref appear in the same window (strongest match)
   let bestScore = 0;
   let foundMatch = false;
 
@@ -696,7 +684,17 @@ function checkProximity(
     }
   }
 
-  // Only match if we found keywords AND article refs in proximity
+  // If we have keywords but no article refs, give partial score (clause might be addressed)
+  if (keywordPositions.length > 0 && articlePositions.length === 0) {
+    return { matched: false, score: 0.4 }; // Partial score - keywords found
+  }
+
+  // If we have article refs but no keywords, give partial score (might be in mapping appendix)
+  if (articlePositions.length > 0 && keywordPositions.length === 0) {
+    return { matched: false, score: 0.3 }; // Lower score - only article ref
+  }
+
+  // Match if we found keywords AND article refs in proximity
   return {
     matched: foundMatch,
     score: bestScore || 0,
@@ -800,7 +798,7 @@ function checkRuleWithContext(
 
   // For complex rules (multiple keywords), require higher co-occurrence
   const isComplexRule = rule.keywords.length >= 3;
-  const minCoOccurrenceThreshold = isComplexRule ? 0.6 : 0.4; // Increased thresholds
+  const minCoOccurrenceThreshold = isComplexRule ? 0.4 : 0.25; // Lowered thresholds for better detection
 
   // Calculate context score based on section name (if provided)
   let contextScore = 1.0;
@@ -820,49 +818,79 @@ function checkRuleWithContext(
   const hasKeywordsWithCoOccurrence =
     coOccurrenceResult.coOccurrenceScore >= minCoOccurrenceThreshold;
 
-  // Check for content length/substance
-  // Ensure the content window containing matches has substantial content (not just mentions)
+  // Check for content length/substance - make this less strict
+  // Check if any window with keywords has reasonable content (not just isolated mentions)
   let hasSubstantialContent = false;
-  if (hasKeywords && hasArticleRefs) {
-    // Find windows that contain both keywords and article refs
-    const relevantWindows = windows.filter((_, idx) => {
-      const hasKwInWindow = keywordPositions.some((pos) => pos.windowIndex === idx);
-      const hasArtInWindow = articlePositions.some((pos) => pos.windowIndex === idx);
-      return hasKwInWindow && hasArtInWindow;
+  if (hasKeywords) {
+    // Find windows that contain keywords
+    const keywordWindows = windows.filter((_, idx) => {
+      return keywordPositions.some((pos) => pos.windowIndex === idx);
     });
     
-    // Check if any relevant window has substantial content (>100 words)
-    hasSubstantialContent = relevantWindows.some(
-      (window) => window.split(/\s+/).length > 100
+    // Check if any keyword window has reasonable content (>30 words, not just mentions)
+    hasSubstantialContent = keywordWindows.some(
+      (window) => window.split(/\s+/).length > 30
     );
   }
 
-  // For required rules, enforce stricter minimum keyword count
-  const minKeywordCount = rule.required ? 2 : 1;
+  // For required rules, use more lenient minimum keyword count
+  const minKeywordCount = rule.required ? 1 : 1; // Lowered from 2 to 1
   const hasMinKeywords = 
     coOccurrenceResult.matchedKeywords.length >= minKeywordCount;
 
-  // Match requires:
-  // 1. BOTH keywords AND article refs in proximity, AND
-  // 2. Co-occurrence threshold met (for keyword quality), AND
-  // 3. Minimum keyword count met, AND
-  // 4. Substantial content present (for required rules)
-  // OR
-  // 5. Very strong keyword presence (high co-occurrence >= 0.7) with multiple unique keywords
+  // Check if keywords and article refs appear anywhere in the document (not just same window)
+  // This allows for cases where they're in different sections but both present
+  const hasKeywordsAndRefsInDocument = hasKeywords && hasArticleRefs;
+
+  // Match conditions (more flexible):
+  // 1. Keywords AND article refs in proximity (strongest match)
+  // 2. Keywords with good co-occurrence AND article refs anywhere in document
+  // 3. Strong keyword presence (high co-occurrence) even without article refs in proximity
+  // 4. Article refs with keywords nearby (within 2 windows)
+  const hasProximityMatch = proximityResult.matched && hasKeywords && hasArticleRefs;
+  
+  // Check if keywords and article refs are within 2 windows of each other (more lenient)
+  let hasNearbyMatch = false;
+  if (hasKeywords && hasArticleRefs) {
+    const keywordWindowIndices = new Set(keywordPositions.map(p => p.windowIndex));
+    const articleWindowIndices = new Set(articlePositions.map(p => p.windowIndex));
+    
+    // Check if any keyword window is within 2 windows of any article ref window
+    for (const kwIdx of keywordWindowIndices) {
+      for (const artIdx of articleWindowIndices) {
+        if (Math.abs(kwIdx - artIdx) <= 2) {
+          hasNearbyMatch = true;
+          break;
+        }
+      }
+      if (hasNearbyMatch) break;
+    }
+  }
+
+  // Strong keyword presence (even without article refs in proximity)
   const hasStrongKeywordPresence =
     hasKeywords &&
-    coOccurrenceResult.coOccurrenceScore >= 0.7 &&
-    coOccurrenceResult.matchedKeywords.length >= Math.max(3, Math.ceil(rule.keywords.length * 0.6));
+    coOccurrenceResult.coOccurrenceScore >= 0.5 && // Lowered from 0.7
+    coOccurrenceResult.matchedKeywords.length >= Math.max(2, Math.ceil(rule.keywords.length * 0.4)); // Lowered thresholds
 
+  // Match if:
+  // 1. Proximity match with co-occurrence
+  // 2. Keywords and article refs nearby (within 2 windows) with co-occurrence
+  // 3. Strong keyword presence with article refs anywhere in document
+  // 4. Very strong keyword presence even without article refs (for cases where article ref might be in mapping appendix)
   const hasFullMatch =
-    proximityResult.matched &&
-    hasKeywords &&
-    hasArticleRefs &&
+    (hasProximityMatch || hasNearbyMatch) &&
     hasKeywordsWithCoOccurrence &&
     hasMinKeywords &&
     (!rule.required || hasSubstantialContent);
 
-  const matched = hasFullMatch || hasStrongKeywordPresence;
+  const hasPartialMatch =
+    hasKeywordsAndRefsInDocument &&
+    hasKeywordsWithCoOccurrence &&
+    hasMinKeywords &&
+    (!rule.required || hasSubstantialContent);
+
+  const matched = hasFullMatch || hasPartialMatch || hasStrongKeywordPresence;
 
   return {
     matched,
