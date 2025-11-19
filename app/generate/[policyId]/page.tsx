@@ -515,36 +515,39 @@ export default function GeneratePolicyPage() {
                 };
 
                 return Object.entries(groupedClauses).map(
-                  ([framework, clauses]) => (
-                    <div key={framework} className="mb-3">
-                      <p className="text-xs font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
-                        {framework}:
-                      </p>
-                      <ul className="list-disc list-inside text-sm text-neutral-600 dark:text-neutral-400 space-y-1 ml-2">
-                        {clauses.slice(0, 10).map((clause: any, idx: number) => (
-                          <li key={idx}>
-                            <span className="font-medium">
-                              {clause.article_ref}:
-                            </span>{" "}
-                            {clause.clause_text}
-                            <span className="text-xs text-neutral-500 dark:text-neutral-500 ml-1">
-                              (should be addressed in:{" "}
-                              {getSectionRecommendation(
-                                clause.framework,
-                                clause.article_ref
-                              )}
-                              )
-                            </span>
-                          </li>
-                        ))}
-                        {clauses.length > 10 && (
-                          <li className="text-xs text-neutral-500">
-                            ... and {clauses.length - 10} more
-                          </li>
-                        )}
-                      </ul>
-                    </div>
-                  )
+                  ([framework, clauses]) => {
+                    const clausesArray = clauses as any[];
+                    return (
+                      <div key={framework} className="mb-3">
+                        <p className="text-xs font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
+                          {framework}:
+                        </p>
+                        <ul className="list-disc list-inside text-sm text-neutral-600 dark:text-neutral-400 space-y-1 ml-2">
+                          {clausesArray.slice(0, 10).map((clause: any, idx: number) => (
+                            <li key={idx}>
+                              <span className="font-medium">
+                                {clause.article_ref}:
+                              </span>{" "}
+                              {clause.clause_text}
+                              <span className="text-xs text-neutral-500 dark:text-neutral-500 ml-1">
+                                (should be addressed in:{" "}
+                                {getSectionRecommendation(
+                                  clause.framework,
+                                  clause.article_ref
+                                )}
+                                )
+                              </span>
+                            </li>
+                          ))}
+                          {clausesArray.length > 10 && (
+                            <li className="text-xs text-neutral-500">
+                              ... and {clausesArray.length - 10} more
+                            </li>
+                          )}
+                        </ul>
+                      </div>
+                    );
+                  }
                 );
               })()}
             </div>
