@@ -4,11 +4,17 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { buildPrompt } from "@/lib/prompts";
-import { analyzePolicyCompliance, extractMappings } from "@/lib/policycop";
+import {
+  analyzePolicyCompliance,
+  extractMappings,
+  getPolicyThresholds,
+} from "@/lib/policycop";
 import {
   extractMappingsFromMetadata,
   validatePolicyStructure,
   validateLastUpdatedFooter,
+  validateContactInformation,
+  type DateValidationResult,
 } from "@/lib/parser";
 import ReactMarkdown from "react-markdown";
 import ExportButton from "@/components/ExportButton";
@@ -34,6 +40,11 @@ export default function GeneratePolicyPage() {
   const [savedPolicyId, setSavedPolicyId] = useState<string | null>(null);
   const [versionNumber, setVersionNumber] = useState<number>(1);
   const [validationWarnings, setValidationWarnings] = useState<string[]>([]);
+  const [policyThresholds, setPolicyThresholds] = useState<{
+    gdpr: number;
+    ai_act: number;
+    iso_42001: number;
+  } | null>(null);
 
   useEffect(() => {
     const generatePolicy = async () => {
@@ -134,16 +145,42 @@ export default function GeneratePolicyPage() {
           result.metadata
         );
 
-        // Validate last updated footer
-        const hasLastUpdated = validateLastUpdatedFooter(generatedContent);
+        // Validate last updated footer with enhanced validation
+        const dateValidation = validateLastUpdatedFooter(generatedContent);
+        
+        // Validate contact information
+        const contactValidation = validateContactInformation(
+          generatedContent,
+          policyType as "privacy_policy" | "ai_usage_policy" | "ai_governance_policy"
+        );
+        
         const allWarnings = [...validation.warnings];
-        if (!hasLastUpdated) {
+        const allErrors = [...validation.errors];
+        
+        // Add date validation errors and warnings
+        if (dateValidation.errors.length > 0) {
+          allErrors.push(...dateValidation.errors);
+        }
+        if (dateValidation.warnings.length > 0) {
+          allWarnings.push(...dateValidation.warnings);
+        }
+        
+        // Add contact validation errors and warnings
+        if (contactValidation.errors.length > 0) {
+          allErrors.push(...contactValidation.errors);
+        }
+        if (contactValidation.warnings.length > 0) {
+          allWarnings.push(...contactValidation.warnings);
+        }
+        
+        // Legacy check for backwards compatibility
+        if (!dateValidation.hasDate && !dateValidation.isPlaceholder) {
           allWarnings.push("Last updated footer not found or incorrectly formatted");
         }
 
         // Log validation results
-        if (validation.errors.length > 0) {
-          console.warn("Policy validation errors:", validation.errors);
+        if (allErrors.length > 0) {
+          console.warn("Policy validation errors:", allErrors);
         }
         if (allWarnings.length > 0) {
           console.warn("Policy validation warnings:", allWarnings);
@@ -160,6 +197,12 @@ export default function GeneratePolicyPage() {
         // Run PolicyCop analysis on the clean content
         const complianceResult = analyzePolicyCompliance(generatedContent);
         setPolicyCopResult(complianceResult);
+        
+        // Get policy-specific thresholds for display
+        const thresholds = getPolicyThresholds(
+          policyType as "privacy_policy" | "ai_usage_policy" | "ai_governance_policy"
+        );
+        setPolicyThresholds(thresholds);
 
         // Extract mappings - prefer METAJSON if available, fallback to regex extraction
         let mappings: Array<{
@@ -310,51 +353,105 @@ export default function GeneratePolicyPage() {
         </div>
       )}
 
-      {policyCopResult && (
+      {policyCopResult && policyThresholds && (
         <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-4 space-y-3">
           <h2 className="text-lg font-semibold">PolicyCop Compliance Score</h2>
           <div className="grid grid-cols-3 gap-4">
             <div>
-              <div className="text-sm text-neutral-600 dark:text-neutral-400">
-                GDPR
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-neutral-600 dark:text-neutral-400">
+                  GDPR
+                </div>
+                <div className="text-xs text-neutral-500 dark:text-neutral-400">
+                  Target: {Math.round(policyThresholds.gdpr * 100)}%
+                </div>
               </div>
               <div className="text-2xl font-bold">
                 {Math.round(policyCopResult.gdpr_coverage * 100)}%
               </div>
-              <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full h-2 mt-1">
+              <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full h-2 mt-1 relative">
                 <div
-                  className="bg-green-600 h-2 rounded-full"
+                  className={`h-2 rounded-full ${
+                    policyCopResult.gdpr_coverage >= policyThresholds.gdpr
+                      ? "bg-green-600"
+                      : policyCopResult.gdpr_coverage >= policyThresholds.gdpr * 0.8
+                      ? "bg-yellow-600"
+                      : "bg-red-600"
+                  }`}
                   style={{ width: `${policyCopResult.gdpr_coverage * 100}%` }}
+                />
+                <div
+                  className="absolute top-0 h-2 border-r-2 border-neutral-400 dark:border-neutral-500"
+                  style={{
+                    left: `${policyThresholds.gdpr * 100}%`,
+                  }}
+                  title={`Threshold: ${Math.round(policyThresholds.gdpr * 100)}%`}
                 />
               </div>
             </div>
             <div>
-              <div className="text-sm text-neutral-600 dark:text-neutral-400">
-                AI Act
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-neutral-600 dark:text-neutral-400">
+                  AI Act
+                </div>
+                <div className="text-xs text-neutral-500 dark:text-neutral-400">
+                  Target: {Math.round(policyThresholds.ai_act * 100)}%
+                </div>
               </div>
               <div className="text-2xl font-bold">
                 {Math.round(policyCopResult.ai_act_coverage * 100)}%
               </div>
-              <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full h-2 mt-1">
+              <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full h-2 mt-1 relative">
                 <div
-                  className="bg-blue-600 h-2 rounded-full"
+                  className={`h-2 rounded-full ${
+                    policyCopResult.ai_act_coverage >= policyThresholds.ai_act
+                      ? "bg-blue-600"
+                      : policyCopResult.ai_act_coverage >= policyThresholds.ai_act * 0.8
+                      ? "bg-yellow-600"
+                      : "bg-red-600"
+                  }`}
                   style={{ width: `${policyCopResult.ai_act_coverage * 100}%` }}
+                />
+                <div
+                  className="absolute top-0 h-2 border-r-2 border-neutral-400 dark:border-neutral-500"
+                  style={{
+                    left: `${policyThresholds.ai_act * 100}%`,
+                  }}
+                  title={`Threshold: ${Math.round(policyThresholds.ai_act * 100)}%`}
                 />
               </div>
             </div>
             <div>
-              <div className="text-sm text-neutral-600 dark:text-neutral-400">
-                ISO 42001
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-neutral-600 dark:text-neutral-400">
+                  ISO 42001
+                </div>
+                <div className="text-xs text-neutral-500 dark:text-neutral-400">
+                  Target: {Math.round(policyThresholds.iso_42001 * 100)}%
+                </div>
               </div>
               <div className="text-2xl font-bold">
                 {Math.round(policyCopResult.iso_42001_coverage * 100)}%
               </div>
-              <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full h-2 mt-1">
+              <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full h-2 mt-1 relative">
                 <div
-                  className="bg-purple-600 h-2 rounded-full"
+                  className={`h-2 rounded-full ${
+                    policyCopResult.iso_42001_coverage >= policyThresholds.iso_42001
+                      ? "bg-purple-600"
+                      : policyCopResult.iso_42001_coverage >= policyThresholds.iso_42001 * 0.8
+                      ? "bg-yellow-600"
+                      : "bg-red-600"
+                  }`}
                   style={{
                     width: `${policyCopResult.iso_42001_coverage * 100}%`,
                   }}
+                />
+                <div
+                  className="absolute top-0 h-2 border-r-2 border-neutral-400 dark:border-neutral-500"
+                  style={{
+                    left: `${policyThresholds.iso_42001 * 100}%`,
+                  }}
+                  title={`Threshold: ${Math.round(policyThresholds.iso_42001 * 100)}%`}
                 />
               </div>
             </div>

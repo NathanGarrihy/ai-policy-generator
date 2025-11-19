@@ -33,7 +33,7 @@ Rules:
 - Do not output reasoning, notes, disclaimers, or commentary. Only produce the final policy content.
 - Insert [Action Required: ...] placeholders where user data is missing — never infer or invent.
 - Include a Mapping Appendix at the end listing each section and its referenced frameworks.
-- Finish the policy with this exact footer line: Last updated: [current date in YYYY-MM-DD format]
+- Finish the policy with this exact footer line: Last updated: YYYY-MM-DD (use the actual current date in YYYY-MM-DD format, for example: Last updated: 2024-12-19)
 
 Output Format:
 You MUST output your response in exactly two blocks. Follow this format exactly:
@@ -124,7 +124,7 @@ Required Sections (include all, even if placeholder-only):
 7. Security Measures (high-level) (map to GDPR Art. 32, ISO 42001 §8.2)
 8. Contact Information (including DPO/privacy contact)
 9. Mapping Appendix (list all sections with their framework references)
-10. Last updated: [current date in YYYY-MM-DD format]
+10. Last updated: YYYY-MM-DD (use the actual current date in YYYY-MM-DD format, for example: Last updated: 2024-12-19)
 
 Important:
 - Use placeholders [Action Required: ...] for any missing information
@@ -224,7 +224,7 @@ Required Sections (include all, even if placeholder-only):
 7. Responsibilities and Accountability (map to AI Act Art. 6, ISO 42001 §5.3)
 8. Contact Information for responsible person
 9. Mapping Appendix (list all sections with their framework references)
-10. Last updated: [current date in YYYY-MM-DD format]
+10. Last updated: YYYY-MM-DD (use the actual current date in YYYY-MM-DD format, for example: Last updated: 2024-12-19)
 
 Important:
 - Use placeholders [Action Required: ...] for any missing information
@@ -283,7 +283,7 @@ Required Sections (include all, even if placeholder-only):
 7. Compliance and Audit Procedures (map to AI Act Art. 26, ISO 42001 §9)
 8. Contact Information for governance owner
 9. Mapping Appendix (list all sections with their framework references)
-10. Last updated: [current date in YYYY-MM-DD format]
+10. Last updated: YYYY-MM-DD (use the actual current date in YYYY-MM-DD format, for example: Last updated: 2024-12-19)
 
 Important:
 - Use placeholders [Action Required: ...] for any missing information

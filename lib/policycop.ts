@@ -30,6 +30,48 @@ export type PolicyCopResult = {
   }>;
 };
 
+export type PolicyCoverageThresholds = {
+  gdpr: number;
+  ai_act: number;
+  iso_42001: number;
+};
+
+/**
+ * Get policy-type-specific coverage thresholds
+ * Different policy types have different expected coverage levels
+ */
+export function getPolicyThresholds(
+  policyType: "privacy_policy" | "ai_usage_policy" | "ai_governance_policy"
+): PolicyCoverageThresholds {
+  switch (policyType) {
+    case "privacy_policy":
+      return {
+        gdpr: 0.7, // 70% - Privacy policies should have high GDPR coverage
+        ai_act: 0.4, // 40% - Privacy policies may reference AI Act but not primarily
+        iso_42001: 0.6, // 60% - Privacy policies should reference ISO 42001 for data handling
+      };
+    case "ai_usage_policy":
+      return {
+        gdpr: 0.3, // 30% - AI Usage policies focus on AI Act, GDPR is secondary
+        ai_act: 0.7, // 70% - AI Usage policies should have high AI Act coverage
+        iso_42001: 0.7, // 70% - AI Usage policies should have high ISO 42001 coverage
+      };
+    case "ai_governance_policy":
+      return {
+        gdpr: 0.2, // 20% - AI Governance policies focus on governance, GDPR is minimal
+        ai_act: 0.7, // 70% - AI Governance policies should have high AI Act coverage
+        iso_42001: 0.7, // 70% - AI Governance policies should have high ISO 42001 coverage
+      };
+    default:
+      // Default thresholds (conservative)
+      return {
+        gdpr: 0.5,
+        ai_act: 0.5,
+        iso_42001: 0.5,
+      };
+  }
+}
+
 /**
  * Parses policy content into sections based on markdown headings (H2/H3)
  * Handles edge cases: no headings, nested headings

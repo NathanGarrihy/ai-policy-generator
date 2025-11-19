@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { parsePolicyOutput } from "@/lib/parser";
+import { parsePolicyOutput, replaceDatePlaceholders } from "@/lib/parser";
 
 export async function POST(req: Request) {
   try {
@@ -72,8 +72,11 @@ export async function POST(req: Request) {
     // Parse structured output to extract POLICY-MARKDOWN and METAJSON
     const parsed = parsePolicyOutput(rawContent);
 
+    // Replace date placeholders and outdated dates with current date
+    const contentWithDates = replaceDatePlaceholders(parsed.content);
+
     return NextResponse.json({
-      content: parsed.content,
+      content: contentWithDates,
       metadata: parsed.metadata,
       hasStructure: parsed.hasStructure,
     });

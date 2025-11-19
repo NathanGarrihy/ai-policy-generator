@@ -378,9 +378,309 @@ export function validatePolicyStructure(
   }
 
   // Check for placeholder handling
-  const hasPlaceholders = /\[Action\s+Required:.*?\]/i.test(content);
-  if (hasPlaceholders && metadata && !metadata.placeholders_present) {
-    warnings.push("Content contains placeholders but METAJSON indicates none");
+  const placeholders = detectPlaceholders(content);
+  const hasPlaceholders = placeholders.length > 0;
+
+  if (hasPlaceholders) {
+    // Verify METAJSON placeholders_present field matches actual detection
+    if (metadata) {
+      if (!metadata.placeholders_present) {
+        warnings.push(
+          "Content contains placeholders but METAJSON indicates none"
+        );
+      }
+    } else {
+      warnings.push(
+        "Content contains placeholders but no METAJSON metadata available to verify"
+      );
+    }
+
+    // Add placeholder details to warnings
+    const placeholderCount = placeholders.length;
+    const placeholderTypes = new Set(placeholders.map((p) => p.type));
+    warnings.push(
+      `Policy contains ${placeholderCount} placeholder(s) requiring action: ${Array.from(placeholderTypes).join(", ")}`
+    );
+
+    // List specific placeholders (limit to first 5 to avoid overwhelming the UI)
+    const placeholderList = placeholders
+      .slice(0, 5)
+      .map((p) => `[${p.type}]: ${p.text}`)
+      .join("; ");
+    if (placeholderList) {
+      warnings.push(`Placeholders found: ${placeholderList}${placeholders.length > 5 ? "..." : ""}`);
+    }
+  } else if (metadata && metadata.placeholders_present) {
+    warnings.push(
+      "METAJSON indicates placeholders are present but none were detected in content"
+    );
+  }
+
+  return {
+    isValid: errors.length === 0,
+    errors,
+    warnings,
+  };
+}
+
+/**
+ * Replace date placeholders and outdated dates with current date
+ * Handles:
+ * - [current date in YYYY-MM-DD format] placeholder
+ * - Hardcoded dates from 2022 or earlier
+ * - Other date placeholders
+ */
+export function replaceDatePlaceholders(content: string): string {
+  if (!content || typeof content !== "string") {
+    return content;
+  }
+
+  // Get current date in YYYY-MM-DD format
+  const now = new Date();
+  const currentDate = now.toISOString().split("T")[0]; // YYYY-MM-DD format
+
+  let replaced = content;
+
+  // Replace placeholder text patterns
+  const placeholderPatterns = [
+    /\[current\s+date\s+in\s+YYYY-MM-DD\s+format\]/gi,
+    /\[current\s+date\]/gi,
+    /current\s+date\s+in\s+YYYY-MM-DD\s+format/gi,
+  ];
+
+  for (const pattern of placeholderPatterns) {
+    replaced = replaced.replace(pattern, currentDate);
+  }
+
+  // Replace "Last updated: [placeholder]" patterns
+  replaced = replaced.replace(
+    /Last\s+updated\s*:?\s*\[current\s+date[^\]]*\]/gi,
+    `Last updated: ${currentDate}`
+  );
+
+  // Replace outdated dates (2022 or earlier) in "Last updated" footer
+  // Match "Last updated: YYYY-MM-DD" where YYYY <= 2022
+  replaced = replaced.replace(
+    /(Last\s+updated\s*:?\s*)(20[0-2][0-9]-\d{2}-\d{2})/gi,
+    (match, prefix, date) => {
+      const year = parseInt(date.split("-")[0], 10);
+      if (year <= 2022) {
+        return `${prefix}${currentDate}`;
+      }
+      return match;
+    }
+  );
+
+  // Also replace standalone dates from 2022 or earlier that appear to be "last updated" dates
+  // This catches cases where the format might be slightly different
+  replaced = replaced.replace(
+    /(Last\s+updated\s*:?\s*)(\d{4}-\d{2}-\d{2})/gi,
+    (match, prefix, date) => {
+      const year = parseInt(date.split("-")[0], 10);
+      if (year <= 2022) {
+        return `${prefix}${currentDate}`;
+      }
+      return match;
+    }
+  );
+
+  return replaced;
+}
+
+export type DateValidationResult = {
+  isValid: boolean;
+  hasDate: boolean;
+  isPlaceholder: boolean;
+  isOutdated: boolean;
+  date?: string;
+  errors: string[];
+  warnings: string[];
+};
+
+export type PlaceholderInfo = {
+  type: string;
+  text: string;
+  fullMatch: string;
+};
+
+/**
+ * Detect and categorize [Action Required: ...] placeholders in policy content
+ */
+export function detectPlaceholders(content: string): PlaceholderInfo[] {
+  if (!content || typeof content !== "string") {
+    return [];
+  }
+
+  const placeholders: PlaceholderInfo[] = [];
+  const placeholderPattern = /\[Action\s+Required:\s*([^\]]+)\]/gi;
+
+  let match;
+  while ((match = placeholderPattern.exec(content)) !== null) {
+    const fullMatch = match[0];
+    const placeholderText = match[1].trim();
+
+    // Categorize placeholder based on text content
+    let type = "general";
+    const textLower = placeholderText.toLowerCase();
+
+    if (
+      textLower.includes("contact") ||
+      textLower.includes("email") ||
+      textLower.includes("dpo") ||
+      textLower.includes("responsible person") ||
+      textLower.includes("governance owner")
+    ) {
+      type = "contact";
+    } else if (
+      textLower.includes("date") ||
+      textLower.includes("updated")
+    ) {
+      type = "date";
+    } else if (
+      textLower.includes("procedure") ||
+      textLower.includes("process") ||
+      textLower.includes("method")
+    ) {
+      type = "procedure";
+    } else if (
+      textLower.includes("company") ||
+      textLower.includes("name")
+    ) {
+      type = "company";
+    } else if (
+      textLower.includes("data") ||
+      textLower.includes("information")
+    ) {
+      type = "data";
+    } else if (
+      textLower.includes("jurisdiction") ||
+      textLower.includes("region")
+    ) {
+      type = "jurisdiction";
+    }
+
+    placeholders.push({
+      type,
+      text: placeholderText,
+      fullMatch,
+    });
+  }
+
+  return placeholders;
+}
+
+/**
+ * Validate contact information in policy content
+ * Checks for presence of contact section and validates email format if present
+ */
+export function validateContactInformation(
+  content: string,
+  policyType: "privacy_policy" | "ai_usage_policy" | "ai_governance_policy"
+): ValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  if (!content || typeof content !== "string") {
+    errors.push("Content is empty or invalid");
+    return { isValid: false, errors, warnings };
+  }
+
+  const contentLower = content.toLowerCase();
+
+  // Check for contact information section
+  const contactSectionPatterns = [
+    /^#{1,3}\s+contact\s+information/i,
+    /^#{1,3}\s+contact\s+details/i,
+    /^#{1,3}\s+contact/i,
+    /contact\s+information/i,
+  ];
+
+  const hasContactSection = contactSectionPatterns.some((pattern) => {
+    const lines = content.split("\n");
+    return lines.some((line) => pattern.test(line.trim()));
+  });
+
+  if (!hasContactSection) {
+    warnings.push("Contact Information section not found in policy");
+  }
+
+  // Check for placeholder contact information
+  const placeholderContactPatterns = [
+    /\[Action\s+Required:\s*[^\]]*contact[^\]]*\]/i,
+    /\[Action\s+Required:\s*[^\]]*email[^\]]*\]/i,
+    /\[Action\s+Required:\s*[^\]]*dpo[^\]]*\]/i,
+    /\[Action\s+Required:\s*[^\]]*responsible\s+person[^\]]*\]/i,
+  ];
+
+  const hasPlaceholderContact = placeholderContactPatterns.some((pattern) =>
+    pattern.test(content)
+  );
+
+  if (hasPlaceholderContact) {
+    warnings.push(
+      "Contact information contains placeholders that need to be replaced with actual contact details"
+    );
+  }
+
+  // Extract email addresses from content
+  const emailPattern = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g;
+  const emails = content.match(emailPattern) || [];
+
+  // Filter out placeholder-like emails (containing "example", "placeholder", etc.)
+  const validEmails = emails.filter(
+    (email) =>
+      !email.toLowerCase().includes("example") &&
+      !email.toLowerCase().includes("placeholder") &&
+      !email.toLowerCase().includes("your-email") &&
+      !email.toLowerCase().includes("contact@")
+  );
+
+  if (hasContactSection && validEmails.length === 0 && !hasPlaceholderContact) {
+    warnings.push(
+      "Contact Information section found but no valid email address detected"
+    );
+  }
+
+  // Validate email format if emails are present
+  const emailRegex = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}$/;
+  for (const email of validEmails) {
+    if (!emailRegex.test(email)) {
+      warnings.push(`Invalid email format detected: ${email}`);
+    }
+  }
+
+  // Policy-specific contact requirements
+  if (policyType === "privacy_policy") {
+    // Privacy policies should have DPO/privacy contact
+    const hasDpoContact =
+      contentLower.includes("dpo") ||
+      contentLower.includes("data protection officer") ||
+      contentLower.includes("privacy officer");
+    if (!hasDpoContact && !hasPlaceholderContact) {
+      warnings.push(
+        "Privacy Policy should include DPO (Data Protection Officer) or privacy contact information"
+      );
+    }
+  } else if (policyType === "ai_usage_policy") {
+    // AI Usage policies should have responsible person
+    const hasResponsiblePerson =
+      contentLower.includes("responsible person") ||
+      contentLower.includes("responsible party");
+    if (!hasResponsiblePerson && !hasPlaceholderContact) {
+      warnings.push(
+        "AI Usage Policy should include responsible person contact information"
+      );
+    }
+  } else if (policyType === "ai_governance_policy") {
+    // AI Governance policies should have governance owner
+    const hasGovernanceOwner =
+      contentLower.includes("governance owner") ||
+      contentLower.includes("ai governance");
+    if (!hasGovernanceOwner && !hasPlaceholderContact) {
+      warnings.push(
+        "AI Governance Policy should include governance owner contact information"
+      );
+    }
   }
 
   return {
@@ -392,8 +692,104 @@ export function validatePolicyStructure(
 
 /**
  * Validate that policy content has "Last updated" footer
+ * Returns detailed validation result including placeholder and outdated date detection
  */
-export function validateLastUpdatedFooter(content: string): boolean {
-  const lastUpdatedPattern = /last\s+updated\s*:?\s*\d{4}-\d{2}-\d{2}/i;
-  return lastUpdatedPattern.test(content);
+export function validateLastUpdatedFooter(
+  content: string
+): DateValidationResult {
+  const result: DateValidationResult = {
+    isValid: false,
+    hasDate: false,
+    isPlaceholder: false,
+    isOutdated: false,
+    errors: [],
+    warnings: [],
+  };
+
+  if (!content || typeof content !== "string") {
+    result.errors.push("Content is empty or invalid");
+    return result;
+  }
+
+  // Check for placeholder patterns
+  const placeholderPatterns = [
+    /\[current\s+date[^\]]*\]/i,
+    /current\s+date\s+in\s+YYYY-MM-DD\s+format/i,
+    /\[current\s+date\]/i,
+  ];
+
+  const hasPlaceholder = placeholderPatterns.some((pattern) =>
+    pattern.test(content)
+  );
+
+  if (hasPlaceholder) {
+    result.isPlaceholder = true;
+    result.errors.push(
+      "Last updated footer contains placeholder text instead of actual date"
+    );
+    return result;
+  }
+
+  // Check for date pattern: "Last updated: YYYY-MM-DD"
+  const lastUpdatedMatch = content.match(
+    /last\s+updated\s*:?\s*(\d{4}-\d{2}-\d{2})/i
+  );
+
+  if (!lastUpdatedMatch) {
+    result.errors.push(
+      "Last updated footer not found or incorrectly formatted (expected: Last updated: YYYY-MM-DD)"
+    );
+    return result;
+  }
+
+  result.hasDate = true;
+  const dateStr = lastUpdatedMatch[1];
+  result.date = dateStr;
+
+  // Validate date format
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(dateStr)) {
+    result.errors.push(`Invalid date format: ${dateStr} (expected YYYY-MM-DD)`);
+    return result;
+  }
+
+  // Check if date is outdated (2022 or earlier)
+  const year = parseInt(dateStr.split("-")[0], 10);
+  const currentYear = new Date().getFullYear();
+
+  if (year <= 2022) {
+    result.isOutdated = true;
+    result.warnings.push(
+      `Last updated date is outdated: ${dateStr} (dates from 2022 or earlier are considered outdated)`
+    );
+  } else if (year > currentYear) {
+    result.warnings.push(
+      `Last updated date is in the future: ${dateStr} (should not exceed current year)`
+    );
+  }
+
+  // Validate date is actually a valid date
+  const dateObj = new Date(dateStr);
+  if (isNaN(dateObj.getTime())) {
+    result.errors.push(`Invalid date value: ${dateStr}`);
+    return result;
+  }
+
+  // Check if date components match
+  const [y, m, d] = dateStr.split("-").map(Number);
+  if (
+    dateObj.getFullYear() !== y ||
+    dateObj.getMonth() + 1 !== m ||
+    dateObj.getDate() !== d
+  ) {
+    result.errors.push(`Invalid date: ${dateStr} (date components don't match)`);
+    return result;
+  }
+
+  // If we got here and no errors, it's valid
+  if (result.errors.length === 0) {
+    result.isValid = true;
+  }
+
+  return result;
 }
