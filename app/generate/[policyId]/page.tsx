@@ -551,7 +551,7 @@ export default function GeneratePolicyPage() {
                 );
               })()}
             </div>
-          )}
+          )} 
           
           {/* Coverage Improvement Suggestions */}
           {(() => {

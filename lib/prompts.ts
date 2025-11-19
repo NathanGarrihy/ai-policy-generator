@@ -34,6 +34,7 @@ Rules:
 - DO NOT use [Action Required: ...] placeholders if the information is provided in Company Details above. Only use placeholders when data is truly missing.
 - Ensure comprehensive coverage of all required articles to meet minimum thresholds specified for each policy type.
 - Include a Mapping Appendix at the end listing each section and its referenced frameworks.
+- IMPORTANT: The Mapping Appendix should ONLY include sections that have framework references (GDPR articles, AI Act articles, ISO 42001 sections). DO NOT include "Contact Information" in the Mapping Appendix as it has no framework references.
 - Finish the policy with this exact footer line: Last updated: YYYY-MM-DD (use the actual current date in YYYY-MM-DD format, for example: Last updated: 2024-12-19)
 
 Output Format:
@@ -129,7 +130,7 @@ Required Sections (include all, even if placeholder-only):
 6. Data Retention & Deletion (map to GDPR Art. 5, 17)
 7. Security Measures (high-level) (map to GDPR Art. 32, ISO 42001 §8.2)
 8. Contact Information (including DPO/privacy contact)
-9. Mapping Appendix (list all sections with their framework references)
+9. Mapping Appendix (list all sections with their framework references - EXCLUDE Contact Information as it has no framework references)
 10. Last updated: YYYY-MM-DD (use the actual current date in YYYY-MM-DD format, for example: Last updated: 2024-12-19)
 
 Critical Required Articles (MUST be comprehensively addressed):
@@ -359,4 +360,61 @@ Important:
   }
 
   return "Policy type not supported yet.";
+}
+
+/**
+ * Remove Contact Information from Mapping Appendix
+ * Contact Information should not appear in the Mapping Appendix as it has no framework references
+ */
+export function removeContactInfoFromMappingAppendix(content: string): string {
+  if (!content || typeof content !== "string") {
+    return content;
+  }
+
+  // Find the Mapping Appendix section
+  const mappingAppendixRegex = /(#{1,3}\s*Mapping\s+Appendix[\s\S]*?)(?=#{1,3}\s*Last\s+updated|$)/i;
+  const match = content.match(mappingAppendixRegex);
+  
+  if (!match) {
+    return content; // No mapping appendix found, return as-is
+  }
+
+  const mappingAppendix = match[1];
+  const beforeAppendix = content.substring(0, match.index!);
+  const afterAppendix = content.substring(match.index! + match[0].length);
+
+  // Remove lines containing "Contact Information" from the mapping appendix
+  // This handles various formats:
+  // - "Contact Information" (standalone)
+  // - "Contact Information (GDPR Art. X)" (with fake references)
+  // - "- Contact Information" (list item)
+  // - "| Contact Information |" (table row)
+  const cleanedAppendix = mappingAppendix
+    .split('\n')
+    .filter(line => {
+      const lineLower = line.toLowerCase().trim();
+      // Skip lines that contain "Contact Information" but keep the section header
+      if (lineLower.includes('contact information')) {
+        // Check if it's the section header itself (starts with #)
+        if (lineLower.match(/^#{1,3}\s*contact\s+information/i)) {
+          return false; // Remove Contact Information section header if it appears in appendix
+        }
+        // Check if it's a mapping entry (contains framework references or is a list/table item)
+        if (
+          lineLower.includes('gdpr') ||
+          lineLower.includes('ai act') ||
+          lineLower.includes('iso') ||
+          lineLower.startsWith('-') ||
+          lineLower.startsWith('|') ||
+          lineLower.match(/^\s*contact\s+information/i)
+        ) {
+          return false; // Remove Contact Information mapping entries
+        }
+      }
+      return true;
+    })
+    .join('\n');
+
+  // Reconstruct content
+  return beforeAppendix + cleanedAppendix + afterAppendix;
 }

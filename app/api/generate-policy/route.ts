@@ -3,6 +3,7 @@ import {
   parsePolicyOutput,
   replaceDatePlaceholders,
   replaceContactPlaceholders,
+  removeContactInfoFromMappingAppendix,
 } from "@/lib/parser";
 
 export async function POST(req: Request) {
@@ -90,6 +91,9 @@ export async function POST(req: Request) {
           | "ai_governance_policy"
       );
     }
+
+    // Remove Contact Information from Mapping Appendix (it shouldn't be there)
+    contentWithDates = removeContactInfoFromMappingAppendix(contentWithDates);
 
     return NextResponse.json({
       content: contentWithDates,
