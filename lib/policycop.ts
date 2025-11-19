@@ -192,16 +192,21 @@ export function analyzePolicyCompliance(
     ...analyzeSectionCompliance(section.content, section.name),
   }));
 
-  // Calculate overall scores (aggregate from sections)
-  // We can either average section scores or analyze the full document
-  // For backward compatibility, we'll analyze the full document for overall scores
-  const gdprMatches = checkRules(GDPR_RULES, contentLower);
+  // Calculate overall scores using context-aware matching (stricter validation)
+  // Use checkRuleWithContext instead of simple checkRule for better accuracy
+  const gdprMatches = GDPR_RULES.map((rule) =>
+    checkRuleWithContext(rule, contentLower).matched
+  );
   const gdprCoverage = calculateCoverage(gdprMatches, GDPR_RULES);
 
-  const aiActMatches = checkRules(AI_ACT_RULES, contentLower);
+  const aiActMatches = AI_ACT_RULES.map((rule) =>
+    checkRuleWithContext(rule, contentLower).matched
+  );
   const aiActCoverage = calculateCoverage(aiActMatches, AI_ACT_RULES);
 
-  const isoMatches = checkRules(ISO_42001_RULES, contentLower);
+  const isoMatches = ISO_42001_RULES.map((rule) =>
+    checkRuleWithContext(rule, contentLower).matched
+  );
   const isoCoverage = calculateCoverage(isoMatches, ISO_42001_RULES);
 
   // Find missing clauses (required ones that weren't found)
@@ -646,6 +651,7 @@ function findArticlePositions(
 /**
  * Checks if keywords and article references appear within the same context window
  * Returns a score from 0 to 1 based on proximity and co-occurrence
+ * Requires both keywords AND article references for a match
  */
 function checkProximity(
   keywordPositions: Array<{
@@ -660,14 +666,16 @@ function checkProximity(
     return { matched: false, score: 0 };
   }
 
-  // If we have keywords but no article refs, still consider it a match (lower score)
+  // Require BOTH keywords AND article references for a match
+  // If we only have keywords but no article refs, it's NOT a match
   if (keywordPositions.length > 0 && articlePositions.length === 0) {
-    return { matched: true, score: 0.5 };
+    return { matched: false, score: 0.2 }; // Low score but not a match
   }
 
-  // If we have article refs but no keywords, still consider it a match (lower score)
+  // If we only have article refs but no keywords, it's NOT a match
+  // Article references alone don't indicate actual clause content
   if (articlePositions.length > 0 && keywordPositions.length === 0) {
-    return { matched: true, score: 0.5 };
+    return { matched: false, score: 0.2 }; // Low score but not a match
   }
 
   // Check if any keyword and article ref appear in the same window
@@ -688,10 +696,10 @@ function checkProximity(
     }
   }
 
+  // Only match if we found keywords AND article refs in proximity
   return {
-    matched:
-      foundMatch || keywordPositions.length > 0 || articlePositions.length > 0,
-    score: bestScore || 0.5,
+    matched: foundMatch,
+    score: bestScore || 0,
   };
 }
 
@@ -792,7 +800,7 @@ function checkRuleWithContext(
 
   // For complex rules (multiple keywords), require higher co-occurrence
   const isComplexRule = rule.keywords.length >= 3;
-  const minCoOccurrenceThreshold = isComplexRule ? 0.5 : 0.3;
+  const minCoOccurrenceThreshold = isComplexRule ? 0.6 : 0.4; // Increased thresholds
 
   // Calculate context score based on section name (if provided)
   let contextScore = 1.0;
@@ -806,15 +814,55 @@ function checkRuleWithContext(
     coOccurrenceResult.coOccurrenceScore * 0.4 +
     contextScore * 0.2;
 
-  // Determine if rule matches
-  // Allow matches when:
-  // 1. Keywords are found AND co-occurrence threshold is met, OR
-  // 2. Article references are found (even without keywords)
+  // Multiple conditions for matching
   const hasArticleRefs = articlePositions.length > 0;
+  const hasKeywords = keywordPositions.length > 0;
   const hasKeywordsWithCoOccurrence =
     coOccurrenceResult.coOccurrenceScore >= minCoOccurrenceThreshold;
-  const matched =
-    proximityResult.matched && (hasKeywordsWithCoOccurrence || hasArticleRefs);
+
+  // Check for content length/substance
+  // Ensure the content window containing matches has substantial content (not just mentions)
+  let hasSubstantialContent = false;
+  if (hasKeywords && hasArticleRefs) {
+    // Find windows that contain both keywords and article refs
+    const relevantWindows = windows.filter((_, idx) => {
+      const hasKwInWindow = keywordPositions.some((pos) => pos.windowIndex === idx);
+      const hasArtInWindow = articlePositions.some((pos) => pos.windowIndex === idx);
+      return hasKwInWindow && hasArtInWindow;
+    });
+    
+    // Check if any relevant window has substantial content (>100 words)
+    hasSubstantialContent = relevantWindows.some(
+      (window) => window.split(/\s+/).length > 100
+    );
+  }
+
+  // For required rules, enforce stricter minimum keyword count
+  const minKeywordCount = rule.required ? 2 : 1;
+  const hasMinKeywords = 
+    coOccurrenceResult.matchedKeywords.length >= minKeywordCount;
+
+  // Match requires:
+  // 1. BOTH keywords AND article refs in proximity, AND
+  // 2. Co-occurrence threshold met (for keyword quality), AND
+  // 3. Minimum keyword count met, AND
+  // 4. Substantial content present (for required rules)
+  // OR
+  // 5. Very strong keyword presence (high co-occurrence >= 0.7) with multiple unique keywords
+  const hasStrongKeywordPresence =
+    hasKeywords &&
+    coOccurrenceResult.coOccurrenceScore >= 0.7 &&
+    coOccurrenceResult.matchedKeywords.length >= Math.max(3, Math.ceil(rule.keywords.length * 0.6));
+
+  const hasFullMatch =
+    proximityResult.matched &&
+    hasKeywords &&
+    hasArticleRefs &&
+    hasKeywordsWithCoOccurrence &&
+    hasMinKeywords &&
+    (!rule.required || hasSubstantialContent);
+
+  const matched = hasFullMatch || hasStrongKeywordPresence;
 
   return {
     matched,
@@ -958,9 +1006,10 @@ function checkRule(rule: ComplianceRule, content: string): boolean {
   const normalizedContent = content.toLowerCase().replace(/\s+/g, " ");
 
   // Check keyword matches with enhanced matching
-  const keywordMatch = rule.keywords.some((keyword) =>
+  const matchedKeywords = rule.keywords.filter((keyword) =>
     matchKeyword(keyword, normalizedContent)
   );
+  const keywordMatch = matchedKeywords.length > 0;
 
   // Check article reference matches with enhanced pattern matching
   const articleMatch = matchArticleReference(
@@ -969,7 +1018,105 @@ function checkRule(rule: ComplianceRule, content: string): boolean {
     normalizedContent
   );
 
-  return keywordMatch || articleMatch;
+  // Require BOTH keywords AND article references
+  // OR require very strong keyword presence (multiple keywords with high co-occurrence)
+  if (!keywordMatch && !articleMatch) {
+    return false;
+  }
+
+  // If we have both keywords and article refs, validate they're contextually related
+  if (keywordMatch && articleMatch) {
+    // For required rules, ensure we have substantial content (not just isolated mentions)
+    if (rule.required) {
+      // Extract context around article references (100 chars before and after)
+      const articlePatterns = generateArticlePatterns(
+        rule.article_ref,
+        rule.framework
+      );
+      let hasContextualContent = false;
+
+      for (const pattern of articlePatterns) {
+        const regexPattern = pattern
+          .replace(/\./g, "\\.")
+          .replace(/\s+/g, "\\s*")
+          .replace(/§/g, "§?");
+        const regex = new RegExp(`.{0,100}${regexPattern}.{0,100}`, "gi");
+        const matches = normalizedContent.match(regex);
+
+        if (matches) {
+          // Check if any match contains keywords (not just article ref)
+          hasContextualContent = matches.some((match) =>
+            matchedKeywords.some((kw) =>
+              match.toLowerCase().includes(kw.toLowerCase())
+            )
+          );
+          if (hasContextualContent) break;
+        }
+      }
+
+      // Require article refs to appear near keywords for required rules
+      if (!hasContextualContent) {
+        // Fall through to keyword-only validation
+        return (
+          matchedKeywords.length >=
+          Math.max(3, Math.ceil(rule.keywords.length * 0.6))
+        );
+      }
+    }
+    return true;
+  }
+
+  // For stronger keyword matching without article refs
+  // Require multiple keywords AND substantial content
+  if (keywordMatch && !articleMatch) {
+    // Different thresholds for required vs optional rules
+    const minKeywords = rule.required ? 3 : 2;
+    const percentageThreshold = rule.required ? 0.6 : 0.5;
+    const keywordThreshold = Math.max(
+      minKeywords,
+      Math.ceil(rule.keywords.length * percentageThreshold)
+    );
+
+    if (matchedKeywords.length < keywordThreshold) {
+      return false;
+    }
+
+    // Verify keywords aren't just isolated mentions
+    // Check for keyword density - matched keywords should appear in proximity
+    const windows = splitIntoContextWindows(normalizedContent, 150);
+    let maxKeywordsInWindow = 0;
+
+    for (const window of windows) {
+      const keywordsInWindow = matchedKeywords.filter((kw) =>
+        window.toLowerCase().includes(kw.toLowerCase())
+      ).length;
+      maxKeywordsInWindow = Math.max(maxKeywordsInWindow, keywordsInWindow);
+    }
+
+    // Require at least 50% of matched keywords to appear in same context window
+    const densityThreshold = Math.ceil(matchedKeywords.length * 0.5);
+    return maxKeywordsInWindow >= densityThreshold;
+  }
+
+  // Article refs alone are NOT sufficient
+  // Only allow if we find substantial clause content
+  if (articleMatch && !keywordMatch) {
+    // Check if clause text keywords appear (even if not in the main keywords list)
+    const clauseTextLower = rule.clause_text.toLowerCase();
+    const clauseKeywords = clauseTextLower
+      .split(/\s+/)
+      .filter((word) => word.length > 4); // Filter out short words
+
+    // Require at least 2 clause keywords for required rules, 1 for optional
+    const minClauseKeywords = rule.required ? 2 : 1;
+    const clauseKeywordMatches = clauseKeywords.filter((word) =>
+      normalizedContent.includes(word)
+    );
+
+    return clauseKeywordMatches.length >= minClauseKeywords;
+  }
+
+  return false;
 }
 
 /**
