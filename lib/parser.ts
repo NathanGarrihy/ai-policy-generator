@@ -570,6 +570,134 @@ export function detectPlaceholders(content: string): PlaceholderInfo[] {
 }
 
 /**
+ * Replace contact and procedure placeholders with actual questionnaire data
+ * Handles placeholders for responsible person, governance owner, CTO contact, and incident reporting procedures
+ */
+export function replaceContactPlaceholders(
+  content: string,
+  questionnaireData: Record<string, any>,
+  policyType: "privacy_policy" | "ai_usage_policy" | "ai_governance_policy"
+): string {
+  if (!content || typeof content !== "string") {
+    return content;
+  }
+
+  let replaced = content;
+  const r = questionnaireData as Record<string, any>;
+
+  if (policyType === "ai_usage_policy") {
+    // Replace responsible person placeholders
+    const responsiblePersonName =
+      r.responsible_person?.trim() ||
+      r.responsible_person_name?.trim() ||
+      null;
+    const responsiblePersonContact =
+      r.responsible_person_contact?.trim() ||
+      r.responsible_person_email?.trim() ||
+      r.contact_email?.trim() ||
+      null;
+
+    if (responsiblePersonName) {
+      replaced = replaced.replace(
+        /\[Action\s+Required:\s*Full\s+Name\s+of\s+Responsible\s+Person[^\]]*\]/gi,
+        responsiblePersonName
+      );
+      replaced = replaced.replace(
+        /\[Action\s+Required:\s*[^\]]*responsible\s+person[^\]]*name[^\]]*\]/gi,
+        responsiblePersonName
+      );
+    }
+
+    if (responsiblePersonContact) {
+      replaced = replaced.replace(
+        /\[Action\s+Required:\s*Contact\s+Information\s+for\s+Responsible\s+Person[^\]]*\]/gi,
+        responsiblePersonContact
+      );
+      replaced = replaced.replace(
+        /\[Action\s+Required:\s*[^\]]*responsible\s+person[^\]]*contact[^\]]*\]/gi,
+        responsiblePersonContact
+      );
+    }
+  } else if (policyType === "ai_governance_policy") {
+    // Replace governance owner placeholders
+    const governanceOwnerName =
+      r.ai_governance_owner_name?.trim() ||
+      r.governance_owner_name?.trim() ||
+      null;
+    const governanceOwnerContact =
+      r.ai_governance_owner_contact?.trim() ||
+      r.governance_owner_contact?.trim() ||
+      r.governance_owner_email?.trim() ||
+      r.cto_contact?.trim() ||
+      r.contact_email?.trim() ||
+      null;
+
+    if (governanceOwnerName) {
+      replaced = replaced.replace(
+        /\[Action\s+Required:\s*Full\s+Name\s+of\s+AI\s+Governance\s+Owner[^\]]*\]/gi,
+        governanceOwnerName
+      );
+      replaced = replaced.replace(
+        /\[Action\s+Required:\s*[^\]]*governance\s+owner[^\]]*name[^\]]*\]/gi,
+        governanceOwnerName
+      );
+    }
+
+    if (governanceOwnerContact) {
+      // Replace CTO contact placeholder
+      replaced = replaced.replace(
+        /\[Action\s+Required:\s*Please\s+provide\s+contact\s+information\s+for\s+the\s+CTO[^\]]*\]/gi,
+        governanceOwnerContact
+      );
+      replaced = replaced.replace(
+        /\[Action\s+Required:\s*[^\]]*contact\s+information\s+for\s+the\s+CTO[^\]]*\]/gi,
+        governanceOwnerContact
+      );
+      replaced = replaced.replace(
+        /\[Action\s+Required:\s*[^\]]*governance\s+owner[^\]]*contact[^\]]*\]/gi,
+        governanceOwnerContact
+      );
+    }
+
+    // Replace incident reporting procedure placeholder
+    const incidentProcedure =
+      r.incident_reporting_procedure?.trim() ||
+      r.incident_reporting_procedure_details?.trim() ||
+      null;
+
+    if (incidentProcedure && incidentProcedure !== "Yes" && incidentProcedure !== "No") {
+      replaced = replaced.replace(
+        /\[Action\s+Required:\s*Please\s+provide\s+details\s+on\s+the\s+incident\s+reporting\s+and\s+response\s+procedures[^\]]*\]/gi,
+        incidentProcedure
+      );
+      replaced = replaced.replace(
+        /\[Action\s+Required:\s*Please\s+provide\s+the\s+Incident\s+Reporting\s+Procedure[^\]]*\]/gi,
+        incidentProcedure
+      );
+      replaced = replaced.replace(
+        /\[Action\s+Required:\s*[^\]]*incident\s+reporting[^\]]*procedure[^\]]*\]/gi,
+        incidentProcedure
+      );
+    }
+  }
+
+  // Generic contact placeholder replacements (for any policy type)
+  const dpoContact = r.dpo_contact?.trim() || r.contact_email?.trim() || null;
+  if (dpoContact) {
+    replaced = replaced.replace(
+      /\[Action\s+Required:\s*[^\]]*dpo[^\]]*contact[^\]]*\]/gi,
+      dpoContact
+    );
+    replaced = replaced.replace(
+      /\[Action\s+Required:\s*[^\]]*privacy\s+contact[^\]]*\]/gi,
+      dpoContact
+    );
+  }
+
+  return replaced;
+}
+
+/**
  * Validate contact information in policy content
  * Checks for presence of contact section and validates email format if present
  */

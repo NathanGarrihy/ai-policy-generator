@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
-import { parsePolicyOutput, replaceDatePlaceholders } from "@/lib/parser";
+import {
+  parsePolicyOutput,
+  replaceDatePlaceholders,
+  replaceContactPlaceholders,
+} from "@/lib/parser";
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { prompt } = body;
+    const { prompt, questionnaireData, policyType } = body;
 
     if (!prompt) {
       return NextResponse.json(
@@ -73,7 +77,19 @@ export async function POST(req: Request) {
     const parsed = parsePolicyOutput(rawContent);
 
     // Replace date placeholders and outdated dates with current date
-    const contentWithDates = replaceDatePlaceholders(parsed.content);
+    let contentWithDates = replaceDatePlaceholders(parsed.content);
+
+    // Replace contact and procedure placeholders with questionnaire data if provided
+    if (questionnaireData && policyType) {
+      contentWithDates = replaceContactPlaceholders(
+        contentWithDates,
+        questionnaireData,
+        policyType as
+          | "privacy_policy"
+          | "ai_usage_policy"
+          | "ai_governance_policy"
+      );
+    }
 
     return NextResponse.json({
       content: contentWithDates,

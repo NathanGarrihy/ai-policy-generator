@@ -113,7 +113,11 @@ export default function GeneratePolicyPage() {
         const res = await fetch("/api/generate-policy", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt }),
+          body: JSON.stringify({
+            prompt,
+            questionnaireData: qData.answers,
+            policyType: policyType,
+          }),
         });
         if (!res.ok) {
           const errorData = await res
@@ -458,21 +462,146 @@ export default function GeneratePolicyPage() {
           </div>
           {policyCopResult.missing_clauses.length > 0 && (
             <div className="mt-4">
-              <p className="text-sm font-medium text-amber-600 dark:text-amber-400">
+              <p className="text-sm font-medium text-amber-600 dark:text-amber-400 mb-2">
                 Missing required clauses:
               </p>
-              <ul className="list-disc list-inside text-sm mt-1 space-y-1">
-                {policyCopResult.missing_clauses
-                  .slice(0, 5)
-                  .map((clause: any, idx: number) => (
-                    <li key={idx}>
-                      {clause.framework} {clause.article_ref}:{" "}
-                      {clause.clause_text}
-                    </li>
-                  ))}
-              </ul>
+              {(() => {
+                // Group missing clauses by framework
+                const groupedClauses = policyCopResult.missing_clauses.reduce(
+                  (acc: Record<string, any[]>, clause: any) => {
+                    if (!acc[clause.framework]) {
+                      acc[clause.framework] = [];
+                    }
+                    acc[clause.framework].push(clause);
+                    return acc;
+                  },
+                  {}
+                );
+
+                // Get section recommendations for each article
+                const getSectionRecommendation = (
+                  framework: string,
+                  articleRef: string
+                ): string => {
+                  const articleNum = articleRef.match(/\d+/)?.[0];
+                  if (framework === "GDPR") {
+                    if (articleNum === "6" || articleNum === "7" || articleNum === "13")
+                      return "Data Collection Categories & Purposes";
+                    if (
+                      ["15", "16", "17", "18", "20", "21"].includes(articleNum || "")
+                    )
+                      return "Data Rights & Transparency";
+                    if (articleNum === "32") return "Security Measures";
+                  } else if (framework === "AI_ACT") {
+                    if (articleNum === "3") return "Scope and Purpose of AI Usage";
+                    if (articleNum === "4")
+                      return "AI Use Cases and Applications";
+                    if (articleNum === "6" || articleNum === "8" || articleNum === "9")
+                      return "Risk Management and Classification";
+                    if (articleNum === "10")
+                      return "Data Handling and Privacy Considerations";
+                    if (articleNum === "11")
+                      return "Documentation and Review Procedures";
+                    if (articleNum === "12")
+                      return "Monitoring and Continuous Improvement";
+                    if (articleNum === "14")
+                      return "Human Oversight Procedures";
+                    if (articleNum === "26")
+                      return "Compliance and Audit Procedures";
+                    if (articleNum === "73")
+                      return "Incident Reporting and Response Procedures";
+                  }
+                  return "Policy Content";
+                };
+
+                return Object.entries(groupedClauses).map(
+                  ([framework, clauses]) => (
+                    <div key={framework} className="mb-3">
+                      <p className="text-xs font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
+                        {framework}:
+                      </p>
+                      <ul className="list-disc list-inside text-sm text-neutral-600 dark:text-neutral-400 space-y-1 ml-2">
+                        {clauses.slice(0, 10).map((clause: any, idx: number) => (
+                          <li key={idx}>
+                            <span className="font-medium">
+                              {clause.article_ref}:
+                            </span>{" "}
+                            {clause.clause_text}
+                            <span className="text-xs text-neutral-500 dark:text-neutral-500 ml-1">
+                              (should be addressed in:{" "}
+                              {getSectionRecommendation(
+                                clause.framework,
+                                clause.article_ref
+                              )}
+                              )
+                            </span>
+                          </li>
+                        ))}
+                        {clauses.length > 10 && (
+                          <li className="text-xs text-neutral-500">
+                            ... and {clauses.length - 10} more
+                          </li>
+                        )}
+                      </ul>
+                    </div>
+                  )
+                );
+              })()}
             </div>
           )}
+          
+          {/* Coverage Improvement Suggestions */}
+          {(() => {
+            const suggestions: string[] = [];
+            
+            if (policyCopResult.gdpr_coverage < policyThresholds.gdpr) {
+              const missingGdpr = policyCopResult.missing_clauses.filter(
+                (c: any) => c.framework === "GDPR"
+              );
+              if (missingGdpr.length > 0) {
+                suggestions.push(
+                  `To improve GDPR coverage (currently ${Math.round(policyCopResult.gdpr_coverage * 100)}%, target: ${Math.round(policyThresholds.gdpr * 100)}%), ensure sections address: ${missingGdpr.slice(0, 3).map((c: any) => c.article_ref).join(", ")}${missingGdpr.length > 3 ? "..." : ""}`
+                );
+              }
+            }
+            
+            if (policyCopResult.ai_act_coverage < policyThresholds.ai_act) {
+              const missingAiAct = policyCopResult.missing_clauses.filter(
+                (c: any) => c.framework === "AI_ACT"
+              );
+              if (missingAiAct.length > 0) {
+                suggestions.push(
+                  `To improve AI Act coverage (currently ${Math.round(policyCopResult.ai_act_coverage * 100)}%, target: ${Math.round(policyThresholds.ai_act * 100)}%), ensure sections address: ${missingAiAct.slice(0, 3).map((c: any) => c.article_ref).join(", ")}${missingAiAct.length > 3 ? "..." : ""}`
+                );
+              }
+            }
+            
+            if (policyCopResult.iso_42001_coverage < policyThresholds.iso_42001) {
+              const missingIso = policyCopResult.missing_clauses.filter(
+                (c: any) => c.framework === "ISO_42001"
+              );
+              if (missingIso.length > 0) {
+                suggestions.push(
+                  `To improve ISO 42001 coverage (currently ${Math.round(policyCopResult.iso_42001_coverage * 100)}%, target: ${Math.round(policyThresholds.iso_42001 * 100)}%), ensure sections address: ${missingIso.slice(0, 3).map((c: any) => c.article_ref).join(", ")}${missingIso.length > 3 ? "..." : ""}`
+                );
+              }
+            }
+            
+            if (suggestions.length === 0) return null;
+            
+            return (
+              <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded">
+                <p className="text-sm font-semibold text-blue-800 dark:text-blue-200 mb-2">
+                  Coverage Improvement Suggestions:
+                </p>
+                <ul className="list-disc list-inside text-sm text-blue-700 dark:text-blue-300 space-y-1">
+                  {suggestions.map((suggestion, idx) => (
+                    <li key={idx}>{suggestion}</li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })()}
         </div>
       )}
 
