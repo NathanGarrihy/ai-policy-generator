@@ -4,7 +4,43 @@ import {
   AI_ACT_RULES,
   ISO_42001_RULES,
   type ComplianceRule,
+  getClauseEligibleSections,
 } from "./compliance-rules";
+
+export type PolicyType = "privacy_policy" | "ai_usage_policy" | "ai_governance_policy";
+
+/**
+ * Maps policy types to their allowed ISO 42001 sections
+ * null means all ISO 42001 sections are allowed
+ */
+export const POLICY_ISO_SECTIONS: Record<PolicyType, string[] | null> = {
+  privacy_policy: ["§8.2"],
+  ai_usage_policy: null,
+  ai_governance_policy: null,
+};
+
+/**
+ * Maps policy types to their allowed frameworks
+ * For privacy_policy, ISO_42001 is limited to §8.2 only
+ */
+export const POLICY_FRAMEWORK_SCOPE: Record<
+  PolicyType,
+  {
+    frameworks: Array<"GDPR" | "AI_ACT" | "ISO_42001">;
+    iso42001Section82Only?: boolean; // Flag for privacy_policy to only use ISO 42001 §8.2
+  }
+> = {
+  privacy_policy: {
+    frameworks: ["GDPR", "ISO_42001"],
+    iso42001Section82Only: true, // Privacy policy only uses ISO 42001 §8.2
+  },
+  ai_usage_policy: {
+    frameworks: ["AI_ACT", "ISO_42001"],
+  },
+  ai_governance_policy: {
+    frameworks: ["AI_ACT", "ISO_42001"],
+  },
+};
 
 export type PolicyCopResult = {
   gdpr_coverage: number;
@@ -41,7 +77,7 @@ export type PolicyCoverageThresholds = {
  * Different policy types have different expected coverage levels
  */
 export function getPolicyThresholds(
-  policyType: "privacy_policy" | "ai_usage_policy" | "ai_governance_policy"
+  policyType: PolicyType
 ): PolicyCoverageThresholds {
   switch (policyType) {
     case "privacy_policy":
@@ -73,18 +109,37 @@ export function getPolicyThresholds(
 }
 
 /**
+ * Normalizes section names for comparison
+ * Lowercases, trims whitespace, and strips common prefixes
+ * Handles variations like "Risk Management" vs "Risk Management Procedures" vs "sec_risk_management"
+ */
+function normalizeSectionName(sectionName: string): string {
+  let normalized = sectionName.toLowerCase().trim();
+  
+  // Strip common prefixes like "sec_", "section_", etc.
+  normalized = normalized.replace(/^(sec_|section_|section\s+)/i, "");
+  
+  // Normalize whitespace
+  normalized = normalized.replace(/\s+/g, " ");
+  
+  return normalized;
+}
+
+/**
  * Parses policy content into sections based on markdown headings (H2/H3)
  * Handles edge cases: no headings, nested headings
  * Each H2 or H3 heading starts a new section
+ * Returns sections with both original name and normalized name
  */
 export function parsePolicySections(policyContent: string): Array<{
   name: string;
   content: string;
+  normalizedName: string;
 }> {
-  const sections: Array<{ name: string; content: string }> = [];
+  const sections: Array<{ name: string; content: string; normalizedName: string }> = [];
   const lines = policyContent.split("\n");
 
-  let currentSection: { name: string; content: string } | null = null;
+  let currentSection: { name: string; content: string; normalizedName: string } | null = null;
   let currentContent: string[] = [];
   let hasSeenHeading = false;
 
@@ -104,7 +159,11 @@ export function parsePolicySections(policyContent: string): Array<{
 
       // Start new section
       const sectionName = headingMatch[2].trim();
-      currentSection = { name: sectionName, content: "" };
+      currentSection = { 
+        name: sectionName, 
+        content: "",
+        normalizedName: normalizeSectionName(sectionName),
+      };
       currentContent = [];
     } else {
       // Non-heading line - add to current section or create default section
@@ -125,21 +184,109 @@ export function parsePolicySections(policyContent: string): Array<{
     sections.push(currentSection);
   } else if (currentContent.length > 0 && !hasSeenHeading) {
     // No headings found - treat entire content as one section
+    const defaultName = "Policy Content";
     sections.push({
-      name: "Policy Content",
+      name: defaultName,
       content: currentContent.join("\n").trim(),
+      normalizedName: normalizeSectionName(defaultName),
     });
   }
 
   // Final fallback: if no sections were found at all
   if (sections.length === 0) {
+    const defaultName = "Policy Content";
     sections.push({
-      name: "Policy Content",
+      name: defaultName,
       content: policyContent.trim(),
+      normalizedName: normalizeSectionName(defaultName),
     });
   }
 
   return sections;
+}
+
+/**
+ * Filters rules based on policy type and framework scope
+ * Returns filtered rules array based on POLICY_FRAMEWORK_SCOPE
+ * For ISO_42001 rules, also filters by allowed sections from POLICY_ISO_SECTIONS
+ */
+function filterRulesByPolicyType(
+  rules: ComplianceRule[],
+  policyType?: PolicyType
+): ComplianceRule[] {
+  if (!policyType) {
+    return rules; // No filtering if policyType not provided
+  }
+
+  const scope = POLICY_FRAMEWORK_SCOPE[policyType];
+  if (!scope) {
+    return rules; // Fallback to all rules if policyType not recognized
+  }
+
+  const allowedIsoSections = POLICY_ISO_SECTIONS[policyType];
+
+  return rules.filter((rule) => {
+    // Filter by allowed frameworks
+    if (!scope.frameworks.includes(rule.framework)) {
+      return false;
+    }
+
+    // For ISO_42001 rules, filter by allowed sections if policy type has restrictions
+    if (rule.framework === "ISO_42001" && allowedIsoSections !== null) {
+      // Extract section identifier from article_ref (e.g., "§8.2" -> "§8.2")
+      // ISO 42001 article_ref format is "§X.Y" or "§X"
+      const isoSection = rule.article_ref;
+      
+      // Check if the rule's section is in the allowed list
+      if (!allowedIsoSections.includes(isoSection)) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+}
+
+/**
+ * Checks if a rule is eligible for a given section based on section_ids
+ * Returns true if rule has no section_ids (backward compatible) or if section matches
+ */
+function isRuleEligibleForSection(
+  rule: ComplianceRule,
+  normalizedSectionName: string,
+  allNormalizedSectionNames: string[]
+): boolean {
+  const eligibleSections = getClauseEligibleSections(rule);
+  
+  // If no section_ids defined, rule is eligible everywhere (backward compatible)
+  if (eligibleSections.length === 0) {
+    return true;
+  }
+  
+  // Normalize eligible section IDs and check for matches
+  const normalizedEligibleSections = eligibleSections.map(normalizeSectionName);
+  
+  // Check if any eligible section matches the current section (fuzzy match)
+  for (const eligibleSection of normalizedEligibleSections) {
+    // Direct match
+    if (normalizedSectionName === eligibleSection) {
+      return true;
+    }
+    
+    // Contains match (e.g., "risk management procedures" contains "risk management")
+    if (normalizedSectionName.includes(eligibleSection) || eligibleSection.includes(normalizedSectionName)) {
+      return true;
+    }
+    
+    // Check against all section names (for cross-section matching)
+    for (const sectionName of allNormalizedSectionNames) {
+      if (sectionName.includes(eligibleSection) || eligibleSection.includes(sectionName)) {
+        return true;
+      }
+    }
+  }
+  
+  return false;
 }
 
 /**
@@ -148,7 +295,9 @@ export function parsePolicySections(policyContent: string): Array<{
  */
 function analyzeSectionCompliance(
   sectionContent: string,
-  sectionName?: string
+  sectionName?: string,
+  policyType?: PolicyType,
+  allNormalizedSectionNames?: string[]
 ): {
   gdpr_coverage: number;
   ai_act_coverage: number;
@@ -161,40 +310,63 @@ function analyzeSectionCompliance(
   }>;
 } {
   const contentLower = sectionContent.toLowerCase();
+  const normalizedSectionName = sectionName ? normalizeSectionName(sectionName) : "";
+  const normalizedSectionNames = allNormalizedSectionNames || [];
+
+  // Filter rules by policy type if provided
+  const filteredGdprRules = policyType
+    ? filterRulesByPolicyType(GDPR_RULES, policyType)
+    : GDPR_RULES;
+  const filteredAiActRules = policyType
+    ? filterRulesByPolicyType(AI_ACT_RULES, policyType)
+    : AI_ACT_RULES;
+  const filteredIsoRules = policyType
+    ? filterRulesByPolicyType(ISO_42001_RULES, policyType)
+    : ISO_42001_RULES;
 
   // Prioritize rules based on section context (if section name provided)
   const prioritizedGdprRules = sectionName
-    ? prioritizeRulesBySection(GDPR_RULES, sectionName)
-    : GDPR_RULES;
+    ? prioritizeRulesBySection(filteredGdprRules, sectionName)
+    : filteredGdprRules;
   const prioritizedAiActRules = sectionName
-    ? prioritizeRulesBySection(AI_ACT_RULES, sectionName)
-    : AI_ACT_RULES;
+    ? prioritizeRulesBySection(filteredAiActRules, sectionName)
+    : filteredAiActRules;
   const prioritizedIsoRules = sectionName
-    ? prioritizeRulesBySection(ISO_42001_RULES, sectionName)
-    : ISO_42001_RULES;
+    ? prioritizeRulesBySection(filteredIsoRules, sectionName)
+    : filteredIsoRules;
 
   // Check GDPR rules with context-aware matching
   const gdprMatches = prioritizedGdprRules.map(
     (rule) => checkRuleWithContext(rule, contentLower, sectionName).matched
   );
-  const gdprCoverage = calculateCoverage(gdprMatches, GDPR_RULES);
+  const gdprCoverage = calculateCoverage(gdprMatches, filteredGdprRules);
 
   // Check AI Act rules with context-aware matching
   const aiActMatches = prioritizedAiActRules.map(
     (rule) => checkRuleWithContext(rule, contentLower, sectionName).matched
   );
-  const aiActCoverage = calculateCoverage(aiActMatches, AI_ACT_RULES);
+  const aiActCoverage = calculateCoverage(aiActMatches, filteredAiActRules);
 
   // Check ISO 42001 rules with context-aware matching
   const isoMatches = prioritizedIsoRules.map(
     (rule) => checkRuleWithContext(rule, contentLower, sectionName).matched
   );
-  const isoCoverage = calculateCoverage(isoMatches, ISO_42001_RULES);
+  const isoCoverage = calculateCoverage(isoMatches, filteredIsoRules);
 
   // Find missing clauses (required ones that weren't found)
-  // Use context-aware matching to reduce false positives
-  const missingClauses = ALL_RULES.filter((rule) => {
+  // Filter ALL_RULES by policy type first, then check for missing clauses
+  const filteredAllRules = policyType
+    ? filterRulesByPolicyType(ALL_RULES, policyType)
+    : ALL_RULES;
+
+  const missingClauses = filteredAllRules.filter((rule) => {
     if (!rule.required) return false;
+    
+    // Check section eligibility: if rule has section_ids, only check if section matches
+    if (normalizedSectionName && !isRuleEligibleForSection(rule, normalizedSectionName, normalizedSectionNames)) {
+      return false; // Skip this rule - not eligible for this section
+    }
+    
     const matched = checkRuleWithContext(
       rule,
       contentLower,
@@ -219,42 +391,94 @@ function analyzeSectionCompliance(
 /**
  * Analyzes policy content against compliance rules
  * Now includes section-level scoring
+ * 
+ * @param policyContent - The policy content to analyze
+ * @param policyType - Optional policy type to filter rules by framework scope
+ *                     If not provided, checks all frameworks (legacy behavior)
  */
 export function analyzePolicyCompliance(
-  policyContent: string
+  policyContent: string,
+  policyType?: PolicyType
 ): PolicyCopResult {
   const contentLower = policyContent.toLowerCase();
 
+  // TODO: Deprecate behavior when policyType is missing
+  // In future versions, policyType should be required
+  if (!policyType) {
+    // Keep current behavior (check all frameworks) for backward compatibility
+  }
+
   // Parse policy into sections
   const sections = parsePolicySections(policyContent);
+  
+  // Build list of normalized section names for cross-section matching
+  const normalizedSectionNames = sections.map(s => s.normalizedName);
 
   // Analyze each section with context-aware matching
   const sectionScores = sections.map((section) => ({
     section_name: section.name,
-    ...analyzeSectionCompliance(section.content, section.name),
+    ...analyzeSectionCompliance(section.content, section.name, policyType, normalizedSectionNames),
   }));
+
+  // Filter rules by policy type if provided
+  const filteredGdprRules = policyType
+    ? filterRulesByPolicyType(GDPR_RULES, policyType)
+    : GDPR_RULES;
+  const filteredAiActRules = policyType
+    ? filterRulesByPolicyType(AI_ACT_RULES, policyType)
+    : AI_ACT_RULES;
+  const filteredIsoRules = policyType
+    ? filterRulesByPolicyType(ISO_42001_RULES, policyType)
+    : ISO_42001_RULES;
 
   // Calculate overall scores using context-aware matching (stricter validation)
   // Use checkRuleWithContext instead of simple checkRule for better accuracy
-  const gdprMatches = GDPR_RULES.map((rule) =>
+  const gdprMatches = filteredGdprRules.map((rule) =>
     checkRuleWithContext(rule, contentLower).matched
   );
-  const gdprCoverage = calculateCoverage(gdprMatches, GDPR_RULES);
+  const gdprCoverage = calculateCoverage(gdprMatches, filteredGdprRules);
 
-  const aiActMatches = AI_ACT_RULES.map((rule) =>
+  const aiActMatches = filteredAiActRules.map((rule) =>
     checkRuleWithContext(rule, contentLower).matched
   );
-  const aiActCoverage = calculateCoverage(aiActMatches, AI_ACT_RULES);
+  const aiActCoverage = calculateCoverage(aiActMatches, filteredAiActRules);
 
-  const isoMatches = ISO_42001_RULES.map((rule) =>
+  const isoMatches = filteredIsoRules.map((rule) =>
     checkRuleWithContext(rule, contentLower).matched
   );
-  const isoCoverage = calculateCoverage(isoMatches, ISO_42001_RULES);
+  const isoCoverage = calculateCoverage(isoMatches, filteredIsoRules);
 
   // Find missing clauses (required ones that weren't found)
-  // Use context-aware matching for consistency with section-level analysis
-  const missingClauses = ALL_RULES.filter((rule) => {
+  // Filter ALL_RULES by policy type first, then check for missing clauses
+  const filteredAllRules = policyType
+    ? filterRulesByPolicyType(ALL_RULES, policyType)
+    : ALL_RULES;
+
+  // Build list of normalized section names for section-based eligibility checking
+  const normalizedSectionNames = sections.map(s => s.normalizedName);
+
+  const missingClauses = filteredAllRules.filter((rule) => {
     if (!rule.required) return false;
+    
+    // Check section eligibility: if rule has section_ids, only check if at least one matching section exists
+    const eligibleSections = getClauseEligibleSections(rule);
+    if (eligibleSections.length > 0) {
+      // Rule has section_ids - check if any eligible section exists in the policy
+      const normalizedEligibleSections = eligibleSections.map(normalizeSectionName);
+      const hasMatchingSection = normalizedSectionNames.some(policySectionName => {
+        return normalizedEligibleSections.some(eligibleSection => {
+          // Fuzzy match: check if policy section contains eligible section or vice versa
+          return policySectionName.includes(eligibleSection) || eligibleSection.includes(policySectionName);
+        });
+      });
+      
+      // If no matching section exists, skip this rule (don't flag as missing)
+      if (!hasMatchingSection) {
+        return false;
+      }
+    }
+    
+    // Rule is eligible - check if it's present in the policy
     const matched = checkRuleWithContext(rule, contentLower).matched;
     return !matched;
   }).map((rule) => ({

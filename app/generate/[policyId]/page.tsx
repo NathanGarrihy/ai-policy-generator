@@ -199,7 +199,10 @@ export default function GeneratePolicyPage() {
         setPolicyText(generatedContent);
 
         // Run PolicyCop analysis on the clean content
-        const complianceResult = analyzePolicyCompliance(generatedContent);
+        const complianceResult = analyzePolicyCompliance(
+          generatedContent,
+          policyType as "privacy_policy" | "ai_usage_policy" | "ai_governance_policy"
+        );
         setPolicyCopResult(complianceResult);
         
         // Get policy-specific thresholds for display

@@ -5,6 +5,7 @@ export type ComplianceRule = {
   required: boolean;
   keywords: string[]; // Keywords to search for in policy content
   description?: string; // Optional description for better documentation
+  section_ids?: string[]; // Optional array of section IDs/titles where this clause is eligible
 };
 
 export const GDPR_RULES: ComplianceRule[] = [
@@ -119,6 +120,7 @@ export const GDPR_RULES: ComplianceRule[] = [
     ],
     description:
       "When collecting data directly from data subjects, controllers must provide specific information about processing",
+    section_ids: ["sec_data_collection", "Data Collection", "Information Collection", "Data Collection and Processing"],
   },
   {
     framework: "GDPR",
@@ -699,6 +701,7 @@ export const AI_ACT_RULES: ComplianceRule[] = [
     ],
     description:
       "Providers must establish, document, and maintain a risk management system for high-risk AI systems",
+    section_ids: ["sec_risk_management", "Risk Management", "Risk Management Procedures", "Risk Assessment and Management"],
   },
   {
     framework: "AI_ACT",
@@ -1063,6 +1066,7 @@ export const ISO_42001_RULES: ComplianceRule[] = [
     ],
     description:
       "Top management must ensure that responsibilities and authorities for relevant roles are assigned and communicated",
+    section_ids: ["sec_governance", "Governance Framework", "Governance & Roles", "Roles and Responsibilities", "Organizational Structure"],
   },
   {
     framework: "ISO_42001",
@@ -1339,4 +1343,14 @@ export const ALL_RULES: ComplianceRule[] = [
   ...AI_ACT_RULES,
   ...ISO_42001_RULES,
 ];
+
+/**
+ * Helper function to get eligible sections for a compliance rule
+ * Returns the section_ids array if present, or empty array if not defined
+ * @param rule - The compliance rule to check
+ * @returns Array of section IDs/titles where this clause is eligible, or empty array
+ */
+export function getClauseEligibleSections(rule: ComplianceRule): string[] {
+  return rule.section_ids || [];
+}
 
