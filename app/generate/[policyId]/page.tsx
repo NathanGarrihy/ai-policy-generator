@@ -199,9 +199,13 @@ export default function GeneratePolicyPage() {
         setPolicyText(generatedContent);
 
         // Run PolicyCop analysis on the clean content
+        // Pass frameworks_selected from METAJSON metadata if available
         const complianceResult = analyzePolicyCompliance(
           generatedContent,
-          policyType as "privacy_policy" | "ai_usage_policy" | "ai_governance_policy"
+          policyType as "privacy_policy" | "ai_usage_policy" | "ai_governance_policy",
+          result.metadata?.frameworks_selected
+            ? { frameworks_selected: result.metadata.frameworks_selected }
+            : undefined
         );
         setPolicyCopResult(complianceResult);
         

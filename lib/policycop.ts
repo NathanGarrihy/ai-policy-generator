@@ -206,28 +206,72 @@ export function parsePolicySections(policyContent: string): Array<{
 }
 
 /**
- * Filters rules based on policy type and framework scope
- * Returns filtered rules array based on POLICY_FRAMEWORK_SCOPE
- * For ISO_42001 rules, also filters by allowed sections from POLICY_ISO_SECTIONS
+ * Gets the framework scope for a policy type, optionally overridden by frameworks_selected
+ * Returns the list of frameworks that should be evaluated for this policy
  */
-function filterRulesByPolicyType(
-  rules: ComplianceRule[],
-  policyType?: PolicyType
-): ComplianceRule[] {
+function getFrameworkScopeForPolicyType(
+  policyType?: PolicyType,
+  frameworksSelected?: string[]
+): Array<"GDPR" | "AI_ACT" | "ISO_42001"> {
+  // If frameworks_selected is provided and non-empty, use it to override
+  if (frameworksSelected && frameworksSelected.length > 0) {
+    // Normalize framework names from METAJSON (e.g., "GDPR", "AI Act", "ISO 42001")
+    const normalizedFrameworks: Array<"GDPR" | "AI_ACT" | "ISO_42001"> = [];
+    
+    for (const framework of frameworksSelected) {
+      const normalized = framework.toUpperCase().trim();
+      if (normalized === "GDPR" || normalized.includes("GDPR")) {
+        normalizedFrameworks.push("GDPR");
+      } else if (normalized === "AI_ACT" || normalized.includes("AI ACT") || normalized.includes("AIACT")) {
+        normalizedFrameworks.push("AI_ACT");
+      } else if (normalized === "ISO_42001" || normalized.includes("ISO 42001") || normalized.includes("ISO42001")) {
+        normalizedFrameworks.push("ISO_42001");
+      }
+    }
+    
+    // Return normalized frameworks if any were recognized, otherwise fall through to policy type default
+    if (normalizedFrameworks.length > 0) {
+      return normalizedFrameworks;
+    }
+  }
+  
+  // Fallback to policy type default
   if (!policyType) {
-    return rules; // No filtering if policyType not provided
+    return ["GDPR", "AI_ACT", "ISO_42001"]; // Default: all frameworks
   }
 
   const scope = POLICY_FRAMEWORK_SCOPE[policyType];
   if (!scope) {
-    return rules; // Fallback to all rules if policyType not recognized
+    return ["GDPR", "AI_ACT", "ISO_42001"]; // Fallback: all frameworks
+  }
+
+  return scope.frameworks;
+}
+
+/**
+ * Filters rules based on policy type and framework scope
+ * Returns filtered rules array based on POLICY_FRAMEWORK_SCOPE
+ * For ISO_42001 rules, also filters by allowed sections from POLICY_ISO_SECTIONS
+ * Optionally accepts frameworks_selected override from METAJSON
+ */
+function filterRulesByPolicyType(
+  rules: ComplianceRule[],
+  policyType?: PolicyType,
+  frameworksSelected?: string[]
+): ComplianceRule[] {
+  // Get the resolved framework scope (with frameworks_selected override if provided)
+  const allowedFrameworks = getFrameworkScopeForPolicyType(policyType, frameworksSelected);
+
+  if (!policyType) {
+    // If no policy type, filter by allowed frameworks only
+    return rules.filter((rule) => allowedFrameworks.includes(rule.framework));
   }
 
   const allowedIsoSections = POLICY_ISO_SECTIONS[policyType];
 
   return rules.filter((rule) => {
-    // Filter by allowed frameworks
-    if (!scope.frameworks.includes(rule.framework)) {
+    // Filter by allowed frameworks (from frameworks_selected or policy type default)
+    if (!allowedFrameworks.includes(rule.framework)) {
       return false;
     }
 
@@ -297,7 +341,8 @@ function analyzeSectionCompliance(
   sectionContent: string,
   sectionName?: string,
   policyType?: PolicyType,
-  allNormalizedSectionNames?: string[]
+  allNormalizedSectionNames?: string[],
+  frameworksSelected?: string[]
 ): {
   gdpr_coverage: number;
   ai_act_coverage: number;
@@ -313,15 +358,15 @@ function analyzeSectionCompliance(
   const normalizedSectionName = sectionName ? normalizeSectionName(sectionName) : "";
   const normalizedSectionNames = allNormalizedSectionNames || [];
 
-  // Filter rules by policy type if provided
-  const filteredGdprRules = policyType
-    ? filterRulesByPolicyType(GDPR_RULES, policyType)
+  // Filter rules by policy type and frameworks_selected override
+  const filteredGdprRules = policyType || frameworksSelected
+    ? filterRulesByPolicyType(GDPR_RULES, policyType, frameworksSelected)
     : GDPR_RULES;
-  const filteredAiActRules = policyType
-    ? filterRulesByPolicyType(AI_ACT_RULES, policyType)
+  const filteredAiActRules = policyType || frameworksSelected
+    ? filterRulesByPolicyType(AI_ACT_RULES, policyType, frameworksSelected)
     : AI_ACT_RULES;
-  const filteredIsoRules = policyType
-    ? filterRulesByPolicyType(ISO_42001_RULES, policyType)
+  const filteredIsoRules = policyType || frameworksSelected
+    ? filterRulesByPolicyType(ISO_42001_RULES, policyType, frameworksSelected)
     : ISO_42001_RULES;
 
   // Prioritize rules based on section context (if section name provided)
@@ -354,9 +399,9 @@ function analyzeSectionCompliance(
   const isoCoverage = calculateCoverage(isoMatches, filteredIsoRules);
 
   // Find missing clauses (required ones that weren't found)
-  // Filter ALL_RULES by policy type first, then check for missing clauses
-  const filteredAllRules = policyType
-    ? filterRulesByPolicyType(ALL_RULES, policyType)
+  // Filter ALL_RULES by policy type and frameworks_selected override
+  const filteredAllRules = policyType || frameworksSelected
+    ? filterRulesByPolicyType(ALL_RULES, policyType, frameworksSelected)
     : ALL_RULES;
 
   const missingClauses = filteredAllRules.filter((rule) => {
@@ -395,12 +440,17 @@ function analyzeSectionCompliance(
  * @param policyContent - The policy content to analyze
  * @param policyType - Optional policy type to filter rules by framework scope
  *                     If not provided, checks all frameworks (legacy behavior)
+ * @param options - Optional metadata/options object containing frameworks_selected override
  */
 export function analyzePolicyCompliance(
   policyContent: string,
-  policyType?: PolicyType
+  policyType?: PolicyType,
+  options?: {
+    frameworks_selected?: string[];
+  }
 ): PolicyCopResult {
   const contentLower = policyContent.toLowerCase();
+  const frameworksSelected = options?.frameworks_selected;
 
   // TODO: Deprecate behavior when policyType is missing
   // In future versions, policyType should be required
@@ -417,18 +467,18 @@ export function analyzePolicyCompliance(
   // Analyze each section with context-aware matching
   const sectionScores = sections.map((section) => ({
     section_name: section.name,
-    ...analyzeSectionCompliance(section.content, section.name, policyType, normalizedSectionNames),
+    ...analyzeSectionCompliance(section.content, section.name, policyType, normalizedSectionNames, frameworksSelected),
   }));
 
-  // Filter rules by policy type if provided
-  const filteredGdprRules = policyType
-    ? filterRulesByPolicyType(GDPR_RULES, policyType)
+  // Filter rules by policy type and frameworks_selected override
+  const filteredGdprRules = policyType || frameworksSelected
+    ? filterRulesByPolicyType(GDPR_RULES, policyType, frameworksSelected)
     : GDPR_RULES;
-  const filteredAiActRules = policyType
-    ? filterRulesByPolicyType(AI_ACT_RULES, policyType)
+  const filteredAiActRules = policyType || frameworksSelected
+    ? filterRulesByPolicyType(AI_ACT_RULES, policyType, frameworksSelected)
     : AI_ACT_RULES;
-  const filteredIsoRules = policyType
-    ? filterRulesByPolicyType(ISO_42001_RULES, policyType)
+  const filteredIsoRules = policyType || frameworksSelected
+    ? filterRulesByPolicyType(ISO_42001_RULES, policyType, frameworksSelected)
     : ISO_42001_RULES;
 
   // Calculate overall scores using context-aware matching (stricter validation)
@@ -449,9 +499,9 @@ export function analyzePolicyCompliance(
   const isoCoverage = calculateCoverage(isoMatches, filteredIsoRules);
 
   // Find missing clauses (required ones that weren't found)
-  // Filter ALL_RULES by policy type first
-  const filteredAllRules = policyType
-    ? filterRulesByPolicyType(ALL_RULES, policyType)
+  // Filter ALL_RULES by policy type and frameworks_selected override
+  const filteredAllRules = policyType || frameworksSelected
+    ? filterRulesByPolicyType(ALL_RULES, policyType, frameworksSelected)
     : ALL_RULES;
 
   // Filter rules based on section eligibility: keep a rule if:

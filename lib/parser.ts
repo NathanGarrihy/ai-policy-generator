@@ -8,6 +8,7 @@ export type PolicyMetadata = {
   policy_type?: string;
   placeholders_present?: boolean;
   jurisdictions?: string[];
+  frameworks_selected?: string[];
   coverage?: {
     gdpr?: number;
     ai_act?: number;
