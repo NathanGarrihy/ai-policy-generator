@@ -110,16 +110,16 @@ export function getPolicyThresholds(
 
 /**
  * Normalizes section names for comparison
- * Lowercases, trims whitespace, and strips common prefixes
+ * Lowercases, trims whitespace, replaces underscores with spaces, and collapses multiple spaces
  * Handles variations like "Risk Management" vs "Risk Management Procedures" vs "sec_risk_management"
  */
-function normalizeSectionName(sectionName: string): string {
-  let normalized = sectionName.toLowerCase().trim();
+function normalizeSectionName(name: string): string {
+  let normalized = name.toLowerCase().trim();
   
-  // Strip common prefixes like "sec_", "section_", etc.
-  normalized = normalized.replace(/^(sec_|section_|section\s+)/i, "");
+  // Replace underscores with spaces
+  normalized = normalized.replace(/_/g, " ");
   
-  // Normalize whitespace
+  // Collapse multiple spaces into single space
   normalized = normalized.replace(/\s+/g, " ");
   
   return normalized;
@@ -449,34 +449,37 @@ export function analyzePolicyCompliance(
   const isoCoverage = calculateCoverage(isoMatches, filteredIsoRules);
 
   // Find missing clauses (required ones that weren't found)
-  // Filter ALL_RULES by policy type first, then check for missing clauses
+  // Filter ALL_RULES by policy type first
   const filteredAllRules = policyType
     ? filterRulesByPolicyType(ALL_RULES, policyType)
     : ALL_RULES;
 
-  // Build list of normalized section names for section-based eligibility checking
-  const normalizedSectionNames = sections.map(s => s.normalizedName);
-
-  const missingClauses = filteredAllRules.filter((rule) => {
-    if (!rule.required) return false;
-    
-    // Check section eligibility: if rule has section_ids, only check if at least one matching section exists
+  // Filter rules based on section eligibility: keep a rule if:
+  // - getClauseEligibleSections(rule) returns empty array (no section restriction), OR
+  // - At least one of its section_ids normalized matches one of the normalizedSectionNames entries
+  const filteredRules = filteredAllRules.filter((rule) => {
     const eligibleSections = getClauseEligibleSections(rule);
-    if (eligibleSections.length > 0) {
-      // Rule has section_ids - check if any eligible section exists in the policy
-      const normalizedEligibleSections = eligibleSections.map(normalizeSectionName);
-      const hasMatchingSection = normalizedSectionNames.some(policySectionName => {
-        return normalizedEligibleSections.some(eligibleSection => {
-          // Fuzzy match: check if policy section contains eligible section or vice versa
-          return policySectionName.includes(eligibleSection) || eligibleSection.includes(policySectionName);
-        });
-      });
-      
-      // If no matching section exists, skip this rule (don't flag as missing)
-      if (!hasMatchingSection) {
-        return false;
-      }
+    
+    // If no section_ids defined, rule is eligible everywhere (backward compatible)
+    if (eligibleSections.length === 0) {
+      return true;
     }
+    
+    // Rule has section_ids - check if any eligible section matches policy sections
+    const normalizedEligibleSections = eligibleSections.map(normalizeSectionName);
+    return normalizedSectionNames.some(policySectionName => {
+      return normalizedEligibleSections.some(eligibleSection => {
+        // Exact or substring match
+        return policySectionName === eligibleSection || 
+               policySectionName.includes(eligibleSection) || 
+               eligibleSection.includes(policySectionName);
+      });
+    });
+  });
+
+  // Compute missing clauses using filteredRules
+  const missingClauses = filteredRules.filter((rule) => {
+    if (!rule.required) return false;
     
     // Rule is eligible - check if it's present in the policy
     const matched = checkRuleWithContext(rule, contentLower).matched;
