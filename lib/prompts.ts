@@ -11,6 +11,10 @@ type Answers =
   | Partial<AIGovernanceQuestionnaire>
   | Record<string, any>;
 
+export type BuildPromptContext = {
+  responses: Answers;
+};
+
 function getJurisdictions(a: Answers) {
   // Support both keys used across the codebase: "jurisdictions" (current) and "jurisdiction" (legacy)
   // Use type assertion to access properties that may not exist on all union types
@@ -25,20 +29,10 @@ function getJurisdictions(a: Answers) {
 
 const SYSTEM_PROMPT_BASE = `You are a compliance drafter generating EU-grade policies aligned with the GDPR, EU AI Act, and ISO/IEC 42001.
 Write in clear, professional English suitable for procurement review. Use short, factual sentences and a neutral legal tone.
-Each section should be 1–2 concise paragraphs followed by inline legal citations in this exact format:
-(GDPR Art. 6), (AI Act Art. 9), (ISO 42001 §8.2)
 
-Rules:
-- Follow the section order provided by the template. Include every section even if empty or placeholder-only.
-- Do not output reasoning, notes, disclaimers, or commentary. Only produce the final policy content.
-- DO NOT use [Action Required: ...] placeholders if the information is provided in Company Details above. Only use placeholders when data is truly missing.
-- Ensure comprehensive coverage of all required articles to meet minimum thresholds specified for each policy type.
-- Include a Mapping Appendix at the end listing each section and its referenced frameworks.
-- IMPORTANT: The Mapping Appendix should ONLY include sections that have framework references (GDPR articles, AI Act articles, ISO 42001 sections). DO NOT include "Contact Information" in the Mapping Appendix as it has no framework references.
-- Finish the policy with this exact footer line: Last updated: YYYY-MM-DD (use the actual current date in YYYY-MM-DD format, for example: Last updated: 2024-12-19)
+## Format Requirements
 
-Output Format:
-You MUST output your response in exactly two blocks. Follow this format exactly:
+You MUST output your response in exactly two blocks with these exact delimiters:
 
 -----BEGIN POLICY-MARKDOWN-----
 [Your complete policy text in Markdown format here]
@@ -46,7 +40,7 @@ You MUST output your response in exactly two blocks. Follow this format exactly:
 
 -----BEGIN POLICY-METAJSON-----
 {
-  "policy_type": "privacy",
+  "policy_type": "privacy|ai_usage|ai_governance",
   "placeholders_present": false,
   "jurisdictions": ["GDPR_EU"],
   "coverage": { "gdpr": 0, "ai_act": 0, "iso_42001": 0 },
@@ -60,13 +54,125 @@ You MUST output your response in exactly two blocks. Follow this format exactly:
 }
 -----END POLICY-METAJSON-----
 
-CRITICAL: 
-- Start with -----BEGIN POLICY-MARKDOWN----- on its own line
-- End with -----END POLICY-METAJSON----- on its own line
-- Include all sections from the policy in the METAJSON sections array
-- Set policy_type to match the policy type being generated ("privacy", "ai_usage", or "ai_governance")
-- Set placeholders_present to true if any [Action Required: ...] appears in the policy, false otherwise
-- The METAJSON must be valid JSON`;
+**Expected Heading Order**: Follow the section order provided in the user message. Include every section even if empty or placeholder-only.
+
+**METAJSON Schema Fields**:
+- policy_type: Must be "privacy", "ai_usage", or "ai_governance"
+- placeholders_present: true if any [Action Required: ...] appears, false otherwise
+- jurisdictions: Array of jurisdiction codes (e.g., ["GDPR_EU", "UK_GDPR"])
+- coverage: Object with gdpr, ai_act, iso_42001 (set to 0, calculated later)
+- sections: Array of section objects with id, title, and framework_refs (array of citation strings)
+
+## Citation Format Accuracy
+
+Use ONLY these exact citation formats. Do not deviate:
+- GDPR: (GDPR Art. 6), (GDPR Art. 13), (GDPR Art. 15-22)
+- AI Act: (AI Act Art. 3), (AI Act Art. 9), (AI Act Art. 14)
+- ISO 42001: (ISO 42001 §8.2), (ISO 42001 §6.2), (ISO 42001 §5.3)
+
+Each section should be 1–2 concise paragraphs followed by inline legal citations using the exact formats above.
+
+## Coverage Thresholds
+
+Generated policies must support achieving ≥70% PolicyCop coverage per policy type for primary frameworks:
+- Privacy Policy: GDPR ≥70%, AI Act ≥40%, ISO 42001 ≥60%
+- AI Usage Policy: GDPR ≥30%, AI Act ≥70%, ISO 42001 ≥70%
+- AI Governance Policy: GDPR ≥20%, AI Act ≥70%, ISO 42001 ≥70%
+
+Ensure comprehensive coverage of all required articles to meet these thresholds.
+
+## Rules
+
+- Follow the section order provided by the template. Include every section even if empty or placeholder-only.
+- Do not output reasoning, notes, disclaimers, or commentary. Only produce the final policy content.
+- DO NOT use [Action Required: ...] placeholders if the information is provided in Company Details. Only use placeholders when data is truly missing.
+- Include a Mapping Appendix at the end listing each section and its referenced frameworks.
+- IMPORTANT: The Mapping Appendix should ONLY include sections that have framework references (GDPR articles, AI Act articles, ISO 42001 sections). DO NOT include "Contact Information" in the Mapping Appendix as it has no framework references.
+- Finish the policy with this exact footer line: Last updated: YYYY-MM-DD (use the actual current date in YYYY-MM-DD format, for example: Last updated: 2024-12-19)
+
+## DO NOT
+
+- DO NOT hallucinate frameworks or articles that don't exist
+- DO NOT add reasoning, explanations, or commentary outside the policy content
+- DO NOT change the delimiter format (must be exactly -----BEGIN POLICY-MARKDOWN----- and -----END POLICY-MARKDOWN-----)
+- DO NOT omit the METAJSON block
+- DO NOT invent missing data - use [Action Required: ...] placeholders instead
+- DO NOT change citation formats - use only (GDPR Art. X), (AI Act Art. X), (ISO 42001 §X.X)`;
+
+/**
+ * Builds a model-specific system prompt based on SYSTEM_PROMPT_BASE
+ * @param modelName - The OpenAI model identifier (e.g., "gpt-3.5-turbo", "gpt-4")
+ * @param policyType - The policy type being generated
+ * @param context - Context containing questionnaire responses
+ * @returns The full system prompt string with model-specific adjustments
+ */
+export function buildPromptForModel(
+  modelName: string,
+  policyType: string,
+  context: BuildPromptContext
+): string {
+  const isGPT35 = modelName.includes("gpt-3.5");
+  
+  if (isGPT35) {
+    // For GPT-3.5, add more explicit step-by-step guidance and examples
+    return `${SYSTEM_PROMPT_BASE}
+
+## Step-by-Step Format Guidance (GPT-3.5)
+
+1. First, write the complete policy content in Markdown format
+2. Then, wrap it with the exact delimiters: -----BEGIN POLICY-MARKDOWN----- and -----END POLICY-MARKDOWN-----
+3. Next, create the METAJSON block with all sections and their framework references
+4. Wrap the METAJSON with: -----BEGIN POLICY-METAJSON----- and -----END POLICY-METAJSON-----
+
+## Example Output Structure
+
+-----BEGIN POLICY-MARKDOWN-----
+# Introduction & Scope
+
+[Policy content here with citations like (GDPR Art. 13)]
+
+# Mapping Appendix
+
+- Introduction & Scope: GDPR Art. 13
+
+Last updated: 2024-12-19
+-----END POLICY-MARKDOWN-----
+
+-----BEGIN POLICY-METAJSON-----
+{
+  "policy_type": "${policyType === "privacy-policy" || policyType === "privacy_policy" ? "privacy" : policyType === "ai-usage-policy" || policyType === "ai_usage_policy" ? "ai_usage" : "ai_governance"}",
+  "placeholders_present": false,
+  "jurisdictions": [],
+  "coverage": { "gdpr": 0, "ai_act": 0, "iso_42001": 0 },
+  "sections": [
+    {
+      "id": "sec_intro",
+      "title": "Introduction & Scope",
+      "framework_refs": ["GDPR Art. 13"]
+    }
+  ]
+}
+-----END POLICY-METAJSON-----
+
+## Citation Format Reminder (CRITICAL)
+
+Before generating, remember to use ONLY these exact formats:
+- (GDPR Art. 6) - NOT "GDPR Article 6" or "Art. 6 GDPR"
+- (AI Act Art. 9) - NOT "EU AI Act Article 9" or "Art. 9 AI Act"
+- (ISO 42001 §8.2) - NOT "ISO 42001 Section 8.2" or "§ 8.2"
+
+Place citations inline after relevant sentences, not in separate lines.`;
+  } else {
+    // For GPT-4 and higher models, keep instructions closer to base with minimal clarifications
+    return `${SYSTEM_PROMPT_BASE}
+
+## Additional Clarifications
+
+- Ensure all citations use the exact formats specified above
+- The METAJSON sections array must include every section from the policy that has framework references
+- Policy type in METAJSON must exactly match: "privacy", "ai_usage", or "ai_governance"`;
+  }
+}
 
 export function buildPrompt(policyType: string, responses: Answers) {
   // Use type assertion to access properties that may not exist on all union types
@@ -101,10 +207,7 @@ export function buildPrompt(policyType: string, responses: Answers) {
     if (jurisArray.includes("CCPA (California)")) jurisdictionList.push("CCPA");
     if (jurisArray.includes("PIPEDA (Canada)")) jurisdictionList.push("PIPEDA");
 
-    return `
-${SYSTEM_PROMPT_BASE}
-
-Generate a **Privacy Policy** for ${companyName}.
+    return `Generate a **Privacy Policy** for ${companyName}.
 
 Coverage Targets:
 - GDPR: ≥70% (Primary focus - privacy policies must comprehensively address GDPR requirements)
@@ -220,10 +323,7 @@ Return only the policy content.
       r.contact_email?.trim() ||
       "[Action Required: Contact Information for Responsible Person]";
 
-    return `
-${SYSTEM_PROMPT_BASE}
-
-Generate an **AI Usage Policy** for ${companyName}.
+    return `Generate an **AI Usage Policy** for ${companyName}.
 
 Coverage Targets:
 - GDPR: ≥30% (Secondary - AI usage policies focus on AI Act compliance, GDPR is relevant for data handling)
@@ -308,10 +408,7 @@ Important:
       r.incident_reporting_procedure_details?.trim() ||
       "[Action Required: Please provide details on the incident reporting and response procedures]";
 
-    return `
-${SYSTEM_PROMPT_BASE}
-
-Generate an **AI Governance & Ethics Policy** for ${companyName}.
+    return `Generate an **AI Governance & Ethics Policy** for ${companyName}.
 
 Coverage Targets:
 - GDPR: ≥20% (Minimal - AI governance policies focus on governance structures, GDPR is minimal)

@@ -5,15 +5,16 @@ import {
   replaceContactPlaceholders,
   removeContactInfoFromMappingAppendix,
 } from "@/lib/parser";
+import { buildPromptForModel, buildPrompt } from "@/lib/prompts";
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { prompt, questionnaireData, policyType } = body;
+    const { questionnaireData, policyType, model } = body;
 
-    if (!prompt) {
+    if (!questionnaireData || !policyType) {
       return NextResponse.json(
-        { error: "Prompt is required" },
+        { error: "questionnaireData and policyType are required" },
         { status: 400 }
       );
     }
@@ -26,6 +27,26 @@ export async function POST(req: Request) {
       );
     }
 
+    // Determine model to use (default to gpt-4)
+    const modelName = model || "gpt-4";
+    
+    // Map policy type from database format to prompt format
+    const promptPolicyType = policyType === "privacy_policy" 
+      ? "privacy-policy" 
+      : policyType === "ai_usage_policy"
+      ? "ai-usage-policy"
+      : policyType === "ai_governance_policy"
+      ? "ai-governance-policy"
+      : policyType;
+
+    // Build system prompt using buildPromptForModel
+    const systemPrompt = buildPromptForModel(modelName, promptPolicyType, {
+      responses: questionnaireData,
+    });
+
+    // Build user message with policy-specific content
+    const userMessage = buildPrompt(promptPolicyType, questionnaireData);
+
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -33,8 +54,11 @@ export async function POST(req: Request) {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "gpt-4",
-        messages: [{ role: "user", content: prompt }],
+        model: modelName,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessage },
+        ],
         temperature: 0.2,
       }),
     });

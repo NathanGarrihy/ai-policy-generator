@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import { buildPrompt } from "@/lib/prompts";
 import {
   analyzePolicyCompliance,
   extractMappings,
@@ -108,13 +107,10 @@ export default function GeneratePolicyPage() {
           policyType
         );
 
-        const prompt = buildPrompt(policyId, qData.answers);
-
         const res = await fetch("/api/generate-policy", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            prompt,
             questionnaireData: qData.answers,
             policyType: policyType,
           }),
