@@ -27,8 +27,8 @@ export async function POST(req: Request) {
       );
     }
 
-    // Determine model to use (default to gpt-4)
-    const modelName = model || "gpt-4";
+    // Determine model to use (default to gpt-3.5-turbo for cost efficiency)
+    const modelName = model || "gpt-3.5-turbo";
     
     // Map policy type from database format to prompt format
     const promptPolicyType = policyType === "privacy_policy" 
@@ -39,13 +39,18 @@ export async function POST(req: Request) {
       ? "ai-governance-policy"
       : policyType;
 
-    // Build system prompt using buildPromptForModel
+    // Build system prompt using buildPromptForModel (optimized for model)
     const systemPrompt = buildPromptForModel(modelName, promptPolicyType, {
       responses: questionnaireData,
     });
 
     // Build user message with policy-specific content
     const userMessage = buildPrompt(promptPolicyType, questionnaireData);
+
+    // Model-specific parameters for optimal output quality
+    const isGPT35 = modelName.includes("gpt-3.5");
+    const temperature = isGPT35 ? 0.1 : 0.2; // Lower temperature for GPT-3.5-turbo for more deterministic output
+    const maxTokens = isGPT35 ? 4000 : undefined; // Limit response length for GPT-3.5-turbo
 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -59,7 +64,8 @@ export async function POST(req: Request) {
           { role: "system", content: systemPrompt },
           { role: "user", content: userMessage },
         ],
-        temperature: 0.2,
+        temperature,
+        ...(maxTokens && { max_tokens: maxTokens }),
       }),
     });
 

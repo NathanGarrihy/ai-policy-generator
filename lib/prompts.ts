@@ -27,12 +27,12 @@ function getJurisdictions(a: Answers) {
     : "None specified";
 }
 
-const SYSTEM_PROMPT_BASE = `You are a compliance drafter generating EU-grade policies aligned with the GDPR, EU AI Act, and ISO/IEC 42001.
+const SYSTEM_PROMPT_BASE = `You are a compliance drafter generating EU-grade policies aligned with GDPR, EU AI Act, and ISO/IEC 42001.
 Write in clear, professional English suitable for procurement review. Use short, factual sentences and a neutral legal tone.
 
-## Format Requirements
+## CRITICAL: Output Format (MUST FOLLOW EXACTLY)
 
-You MUST output your response in exactly two blocks with these exact delimiters:
+You MUST output your response in exactly two blocks with these EXACT delimiters:
 
 -----BEGIN POLICY-MARKDOWN-----
 [Your complete policy text in Markdown format here]
@@ -54,49 +54,47 @@ You MUST output your response in exactly two blocks with these exact delimiters:
 }
 -----END POLICY-METAJSON-----
 
-**Expected Heading Order**: Follow the section order provided in the user message. Include every section even if empty or placeholder-only.
+## Citation Format (CRITICAL - USE EXACT FORMATS ONLY)
 
-**METAJSON Schema Fields**:
-- policy_type: Must be "privacy", "ai_usage", or "ai_governance"
-- placeholders_present: true if any [Action Required: ...] appears, false otherwise
-- jurisdictions: Array of jurisdiction codes (e.g., ["GDPR_EU", "UK_GDPR"])
-- coverage: Object with gdpr, ai_act, iso_42001 (set to 0, calculated later)
-- sections: Array of section objects with id, title, and framework_refs (array of citation strings)
+Use ONLY these exact citation formats. Place citations inline after relevant sentences:
+- GDPR: (GDPR Art. 6) ✓ | WRONG: "GDPR Article 6" or "Art. 6 GDPR" ✗
+- AI Act: (AI Act Art. 9) ✓ | WRONG: "EU AI Act Article 9" or "Art. 9 AI Act" ✗
+- ISO 42001: (ISO 42001 §8.2) ✓ | WRONG: "ISO 42001 Section 8.2" or "§ 8.2" ✗
 
-## Citation Format Accuracy
+Each section: 1–2 concise paragraphs + inline citations using exact formats above.
 
-Use ONLY these exact citation formats. Do not deviate:
-- GDPR: (GDPR Art. 6), (GDPR Art. 13), (GDPR Art. 15-22)
-- AI Act: (AI Act Art. 3), (AI Act Art. 9), (AI Act Art. 14)
-- ISO 42001: (ISO 42001 §8.2), (ISO 42001 §6.2), (ISO 42001 §5.3)
+## Coverage Thresholds (MUST MEET)
 
-Each section should be 1–2 concise paragraphs followed by inline legal citations using the exact formats above.
-
-## Coverage Thresholds
-
-Generated policies must support achieving ≥70% PolicyCop coverage per policy type for primary frameworks:
 - Privacy Policy: GDPR ≥70%, AI Act ≥40%, ISO 42001 ≥60%
 - AI Usage Policy: GDPR ≥30%, AI Act ≥70%, ISO 42001 ≥70%
 - AI Governance Policy: GDPR ≥20%, AI Act ≥70%, ISO 42001 ≥70%
 
 Ensure comprehensive coverage of all required articles to meet these thresholds.
 
+## METAJSON Schema
+
+- policy_type: "privacy" | "ai_usage" | "ai_governance" (exact match)
+- placeholders_present: true if any [Action Required: ...] appears
+- jurisdictions: Array like ["GDPR_EU", "UK_GDPR"] or []
+- coverage: { "gdpr": 0, "ai_act": 0, "iso_42001": 0 } (set to 0)
+- sections: Array with id, title, framework_refs (citation strings)
+
 ## Rules
 
-- Follow the section order provided by the template. Include every section even if empty or placeholder-only.
-- Do not output reasoning, notes, disclaimers, or commentary. Only produce the final policy content.
-- DO NOT use [Action Required: ...] placeholders if the information is provided in Company Details. Only use placeholders when data is truly missing.
-- Include a Mapping Appendix at the end listing each section and its referenced frameworks.
-- IMPORTANT: The Mapping Appendix should ONLY include sections that have framework references (GDPR articles, AI Act articles, ISO 42001 sections). DO NOT include "Contact Information" in the Mapping Appendix as it has no framework references.
-- Finish the policy with this exact footer line: Last updated: YYYY-MM-DD (use the actual current date in YYYY-MM-DD format, for example: Last updated: 2024-12-19)
+- Follow section order from user message. Include every section even if placeholder-only.
+- No reasoning, notes, disclaimers, or commentary. Only final policy content.
+- Use [Action Required: ...] ONLY when data is truly missing (not if provided in Company Details).
+- Include Mapping Appendix listing sections with framework references.
+- Mapping Appendix: EXCLUDE "Contact Information" (it has no framework references).
+- Footer: Last updated: YYYY-MM-DD (use actual current date, e.g., Last updated: 2024-12-19)
 
 ## DO NOT
 
 - DO NOT hallucinate frameworks or articles that don't exist
-- DO NOT add reasoning, explanations, or commentary outside the policy content
-- DO NOT change the delimiter format (must be exactly -----BEGIN POLICY-MARKDOWN----- and -----END POLICY-MARKDOWN-----)
-- DO NOT omit the METAJSON block
-- DO NOT invent missing data - use [Action Required: ...] placeholders instead
+- DO NOT add reasoning, explanations, or commentary outside policy content
+- DO NOT change delimiter format (must be exactly -----BEGIN POLICY-MARKDOWN-----)
+- DO NOT omit METAJSON block
+- DO NOT invent missing data - use [Action Required: ...] placeholders
 - DO NOT change citation formats - use only (GDPR Art. X), (AI Act Art. X), (ISO 42001 §X.X)`;
 
 /**
@@ -114,22 +112,43 @@ export function buildPromptForModel(
   const isGPT35 = modelName.includes("gpt-3.5");
   
   if (isGPT35) {
-    // For GPT-3.5, add more explicit step-by-step guidance and examples
+    // For GPT-3.5-turbo, add explicit step-by-step guidance with concrete examples
+    const policyTypeNormalized = policyType === "privacy-policy" || policyType === "privacy_policy" 
+      ? "privacy" 
+      : policyType === "ai-usage-policy" || policyType === "ai_usage_policy" 
+      ? "ai_usage" 
+      : "ai_governance";
+    
     return `${SYSTEM_PROMPT_BASE}
 
-## Step-by-Step Format Guidance (GPT-3.5)
+## ⚠️ GPT-3.5-TURBO: Step-by-Step Instructions
 
-1. First, write the complete policy content in Markdown format
-2. Then, wrap it with the exact delimiters: -----BEGIN POLICY-MARKDOWN----- and -----END POLICY-MARKDOWN-----
-3. Next, create the METAJSON block with all sections and their framework references
-4. Wrap the METAJSON with: -----BEGIN POLICY-METAJSON----- and -----END POLICY-METAJSON-----
+Follow these steps EXACTLY:
 
-## Example Output Structure
+STEP 1: Write complete policy content in Markdown
+- Use headings (# Section Title)
+- Write 1-2 paragraphs per section
+- Add inline citations using EXACT formats: (GDPR Art. 6), (AI Act Art. 9), (ISO 42001 §8.2)
+
+STEP 2: Wrap policy with delimiters
+- Start with: -----BEGIN POLICY-MARKDOWN-----
+- End with: -----END POLICY-MARKDOWN-----
+
+STEP 3: Create METAJSON block
+- Include ALL sections that have framework references
+- Use exact JSON format shown below
+- Set policy_type to "${policyTypeNormalized}"
+
+STEP 4: Wrap METAJSON with delimiters
+- Start with: -----BEGIN POLICY-METAJSON-----
+- End with: -----END POLICY-METAJSON-----
+
+## Example Output (Follow This Structure)
 
 -----BEGIN POLICY-MARKDOWN-----
 # Introduction & Scope
 
-[Policy content here with citations like (GDPR Art. 13)]
+This policy applies to [company] and covers data processing activities. We process personal data in accordance with applicable regulations (GDPR Art. 13).
 
 # Mapping Appendix
 
@@ -140,7 +159,7 @@ Last updated: 2024-12-19
 
 -----BEGIN POLICY-METAJSON-----
 {
-  "policy_type": "${policyType === "privacy-policy" || policyType === "privacy_policy" ? "privacy" : policyType === "ai-usage-policy" || policyType === "ai_usage_policy" ? "ai_usage" : "ai_governance"}",
+  "policy_type": "${policyTypeNormalized}",
   "placeholders_present": false,
   "jurisdictions": [],
   "coverage": { "gdpr": 0, "ai_act": 0, "iso_42001": 0 },
@@ -154,14 +173,21 @@ Last updated: 2024-12-19
 }
 -----END POLICY-METAJSON-----
 
-## Citation Format Reminder (CRITICAL)
+## ⚠️ CRITICAL: Citation Format (DO NOT DEVIATE)
 
-Before generating, remember to use ONLY these exact formats:
-- (GDPR Art. 6) - NOT "GDPR Article 6" or "Art. 6 GDPR"
-- (AI Act Art. 9) - NOT "EU AI Act Article 9" or "Art. 9 AI Act"
-- (ISO 42001 §8.2) - NOT "ISO 42001 Section 8.2" or "§ 8.2"
+CORRECT formats (use these):
+✓ (GDPR Art. 6)
+✓ (AI Act Art. 9)
+✓ (ISO 42001 §8.2)
 
-Place citations inline after relevant sentences, not in separate lines.`;
+WRONG formats (never use):
+✗ "GDPR Article 6"
+✗ "Art. 6 GDPR"
+✗ "EU AI Act Article 9"
+✗ "ISO 42001 Section 8.2"
+✗ "§ 8.2"
+
+Place citations inline immediately after the sentence they support.`;
   } else {
     // For GPT-4 and higher models, keep instructions closer to base with minimal clarifications
     return `${SYSTEM_PROMPT_BASE}
