@@ -6,6 +6,11 @@ import {
   type ComplianceRule,
   getClauseEligibleSections,
 } from "./compliance-rules";
+import {
+  type PolicyMetadata,
+  detectPlaceholders,
+  parsePolicyOutput,
+} from "./parser";
 
 export type PolicyType = "privacy_policy" | "ai_usage_policy" | "ai_governance_policy";
 
@@ -1605,4 +1610,390 @@ export function extractMappings(policyContent: string): Array<{
   });
 
   return mappings;
+}
+
+// ============================================================================
+// Quality Scoring & Validation
+// ============================================================================
+
+export type QualityScoreResult = {
+  score: number; // 0-1 score
+  issues: string[];
+  checks: {
+    structuredFormat: boolean;
+    metajsonValid: boolean;
+    frameworkReferences: {
+      count: number;
+      isValid: boolean;
+    };
+    coverageThresholds: {
+      meetsThresholds: boolean;
+      details: {
+        framework: string;
+        coverage: number;
+        threshold: number;
+        meets: boolean;
+      }[];
+    };
+    placeholderCount: number;
+  };
+};
+
+/**
+ * Calculate quality score for a policy output
+ * Checks: structured format presence, METAJSON validity, framework reference count,
+ * PolicyCop coverage thresholds, placeholder count
+ * Returns score (0-1) and list of issues
+ */
+export function calculateQualityScore(
+  rawContent: string,
+  policyType: PolicyType,
+  policyCopResult?: PolicyCopResult
+): QualityScoreResult {
+  const issues: string[] = [];
+  const checks = {
+    structuredFormat: false,
+    metajsonValid: false,
+    frameworkReferences: {
+      count: 0,
+      isValid: false,
+    },
+    coverageThresholds: {
+      meetsThresholds: false,
+      details: [] as {
+        framework: string;
+        coverage: number;
+        threshold: number;
+        meets: boolean;
+      }[],
+    },
+    placeholderCount: 0,
+  };
+
+  // Parse the policy output to check structured format
+  const parsed = parsePolicyOutput(rawContent);
+  checks.structuredFormat = parsed.hasStructure;
+
+  if (!checks.structuredFormat) {
+    issues.push("Policy output does not follow structured format (missing POLICY-MARKDOWN block)");
+  }
+
+  // Check METAJSON validity
+  if (parsed.metadata) {
+    try {
+      // Basic validation: check if metadata has required fields
+      const metadata = parsed.metadata;
+      checks.metajsonValid = true;
+
+      // Validate metadata structure
+      if (!metadata.policy_type && !metadata.frameworks_selected) {
+        issues.push("METAJSON missing policy_type or frameworks_selected");
+        checks.metajsonValid = false;
+      }
+    } catch (e) {
+      issues.push(`METAJSON parsing failed: ${e instanceof Error ? e.message : String(e)}`);
+      checks.metajsonValid = false;
+    }
+  } else {
+    issues.push("METAJSON block missing or invalid");
+    checks.metajsonValid = false;
+  }
+
+  // Count framework references in content
+  const mappings = extractMappings(parsed.content || rawContent);
+  checks.frameworkReferences.count = mappings.length;
+  
+  // Consider framework references valid if we have at least some references
+  // Minimum threshold: at least 5 references for a good policy
+  const minFrameworkRefs = 5;
+  checks.frameworkReferences.isValid = checks.frameworkReferences.count >= minFrameworkRefs;
+
+  if (!checks.frameworkReferences.isValid) {
+    issues.push(
+      `Insufficient framework references found: ${checks.frameworkReferences.count} (minimum: ${minFrameworkRefs})`
+    );
+  }
+
+  // Check PolicyCop coverage thresholds (if PolicyCop result provided)
+  if (policyCopResult) {
+    const thresholds = getPolicyThresholds(policyType);
+    const coverageDetails: {
+      framework: string;
+      coverage: number;
+      threshold: number;
+      meets: boolean;
+    }[] = [];
+
+    // Check GDPR coverage
+    if (policyCopResult.gdpr_coverage !== undefined) {
+      const meets = policyCopResult.gdpr_coverage >= thresholds.gdpr;
+      coverageDetails.push({
+        framework: "GDPR",
+        coverage: policyCopResult.gdpr_coverage,
+        threshold: thresholds.gdpr,
+        meets,
+      });
+      if (!meets) {
+        issues.push(
+          `GDPR coverage ${(policyCopResult.gdpr_coverage * 100).toFixed(1)}% below threshold ${(thresholds.gdpr * 100).toFixed(0)}%`
+        );
+      }
+    }
+
+    // Check AI Act coverage
+    if (policyCopResult.ai_act_coverage !== undefined) {
+      const meets = policyCopResult.ai_act_coverage >= thresholds.ai_act;
+      coverageDetails.push({
+        framework: "AI_ACT",
+        coverage: policyCopResult.ai_act_coverage,
+        threshold: thresholds.ai_act,
+        meets,
+      });
+      if (!meets) {
+        issues.push(
+          `AI Act coverage ${(policyCopResult.ai_act_coverage * 100).toFixed(1)}% below threshold ${(thresholds.ai_act * 100).toFixed(0)}%`
+        );
+      }
+    }
+
+    // Check ISO 42001 coverage
+    if (policyCopResult.iso_42001_coverage !== undefined) {
+      const meets = policyCopResult.iso_42001_coverage >= thresholds.iso_42001;
+      coverageDetails.push({
+        framework: "ISO_42001",
+        coverage: policyCopResult.iso_42001_coverage,
+        threshold: thresholds.iso_42001,
+        meets,
+      });
+      if (!meets) {
+        issues.push(
+          `ISO 42001 coverage ${(policyCopResult.iso_42001_coverage * 100).toFixed(1)}% below threshold ${(thresholds.iso_42001 * 100).toFixed(0)}%`
+        );
+      }
+    }
+
+    checks.coverageThresholds.details = coverageDetails;
+    checks.coverageThresholds.meetsThresholds = coverageDetails.every((d) => d.meets);
+  } else {
+    issues.push("PolicyCop analysis not provided - cannot validate coverage thresholds");
+  }
+
+  // Count placeholders
+  const placeholders = detectPlaceholders(parsed.content || rawContent);
+  checks.placeholderCount = placeholders.length;
+
+  // Placeholders are acceptable but should be noted
+  if (checks.placeholderCount > 0) {
+    issues.push(
+      `Policy contains ${checks.placeholderCount} placeholder(s) requiring action`
+    );
+  }
+
+  // Calculate overall quality score (0-1)
+  // Weighted scoring:
+  // - Structured format: 20%
+  // - METAJSON validity: 20%
+  // - Framework references: 20%
+  // - Coverage thresholds: 30%
+  // - Placeholders: 10% (penalty for excessive placeholders)
+
+  let score = 0;
+
+  // Structured format (20%)
+  if (checks.structuredFormat) {
+    score += 0.2;
+  }
+
+  // METAJSON validity (20%)
+  if (checks.metajsonValid) {
+    score += 0.2;
+  }
+
+  // Framework references (20%)
+  // Score based on reference count (normalized to 0-0.2)
+  const refScore = Math.min(0.2, (checks.frameworkReferences.count / 20) * 0.2);
+  score += refScore;
+
+  // Coverage thresholds (30%)
+  if (policyCopResult && checks.coverageThresholds.details.length > 0) {
+    const coverageScore = checks.coverageThresholds.details.reduce((sum, d) => {
+      return sum + (d.meets ? d.coverage / d.threshold : d.coverage / d.threshold * 0.5);
+    }, 0) / checks.coverageThresholds.details.length;
+    score += Math.min(0.3, coverageScore * 0.3);
+  } else {
+    // If no PolicyCop result, don't penalize (assume 0.15 for neutral)
+    score += 0.15;
+  }
+
+  // Placeholders (10% penalty)
+  // Fewer placeholders = better score
+  const placeholderPenalty = Math.min(0.1, (checks.placeholderCount / 10) * 0.1);
+  score += Math.max(0, 0.1 - placeholderPenalty);
+
+  // Ensure score is between 0 and 1
+  score = Math.max(0, Math.min(1, score));
+
+  return {
+    score,
+    issues,
+    checks,
+  };
+}
+
+export type PolicyQualityValidationResult = {
+  isValid: boolean;
+  qualityScore: number;
+  issues: string[];
+  warnings: string[];
+  policyCopResult: PolicyCopResult;
+  qualityChecks: QualityScoreResult["checks"];
+  actionableFeedback: string[];
+};
+
+/**
+ * Validate policy quality by combining PolicyCop analysis with quality checks
+ * Returns comprehensive validation result with actionable feedback
+ * Checks coverage against policy-specific thresholds with 10% margin
+ */
+export function validatePolicyQuality(
+  policyContent: string,
+  policyType: PolicyType,
+  options?: {
+    frameworks_selected?: string[];
+  }
+): PolicyQualityValidationResult {
+  const issues: string[] = [];
+  const warnings: string[] = [];
+  const actionableFeedback: string[] = [];
+
+  // Run PolicyCop analysis
+  const policyCopResult = analyzePolicyCompliance(policyContent, policyType, options);
+
+  // Calculate quality score
+  const qualityScoreResult = calculateQualityScore(
+    policyContent,
+    policyType,
+    policyCopResult
+  );
+
+  // Get policy-specific thresholds
+  const thresholds = getPolicyThresholds(policyType);
+  const thresholdMargin = 0.1; // 10% margin
+
+  // Check coverage against thresholds with margin
+  const adjustedThresholds = {
+    gdpr: thresholds.gdpr * (1 - thresholdMargin),
+    ai_act: thresholds.ai_act * (1 - thresholdMargin),
+    iso_42001: thresholds.iso_42001 * (1 - thresholdMargin),
+  };
+
+  // Validate GDPR coverage
+  if (policyCopResult.gdpr_coverage < adjustedThresholds.gdpr) {
+    const shortfall = ((adjustedThresholds.gdpr - policyCopResult.gdpr_coverage) * 100).toFixed(1);
+    issues.push(
+      `GDPR coverage ${(policyCopResult.gdpr_coverage * 100).toFixed(1)}% is below threshold ${(adjustedThresholds.gdpr * 100).toFixed(1)}% (shortfall: ${shortfall}%)`
+    );
+    actionableFeedback.push(
+      `Improve GDPR coverage by ${shortfall}% - add missing clauses: ${policyCopResult.missing_clauses
+        .filter((c) => c.framework === "GDPR")
+        .slice(0, 3)
+        .map((c) => c.article_ref)
+        .join(", ")}`
+    );
+  } else if (policyCopResult.gdpr_coverage < thresholds.gdpr) {
+    warnings.push(
+      `GDPR coverage ${(policyCopResult.gdpr_coverage * 100).toFixed(1)}% is below target ${(thresholds.gdpr * 100).toFixed(0)}% but within acceptable margin`
+    );
+  }
+
+  // Validate AI Act coverage
+  if (policyCopResult.ai_act_coverage < adjustedThresholds.ai_act) {
+    const shortfall = ((adjustedThresholds.ai_act - policyCopResult.ai_act_coverage) * 100).toFixed(1);
+    issues.push(
+      `AI Act coverage ${(policyCopResult.ai_act_coverage * 100).toFixed(1)}% is below threshold ${(adjustedThresholds.ai_act * 100).toFixed(1)}% (shortfall: ${shortfall}%)`
+    );
+    actionableFeedback.push(
+      `Improve AI Act coverage by ${shortfall}% - add missing clauses: ${policyCopResult.missing_clauses
+        .filter((c) => c.framework === "AI_ACT")
+        .slice(0, 3)
+        .map((c) => c.article_ref)
+        .join(", ")}`
+    );
+  } else if (policyCopResult.ai_act_coverage < thresholds.ai_act) {
+    warnings.push(
+      `AI Act coverage ${(policyCopResult.ai_act_coverage * 100).toFixed(1)}% is below target ${(thresholds.ai_act * 100).toFixed(0)}% but within acceptable margin`
+    );
+  }
+
+  // Validate ISO 42001 coverage
+  if (policyCopResult.iso_42001_coverage < adjustedThresholds.iso_42001) {
+    const shortfall = ((adjustedThresholds.iso_42001 - policyCopResult.iso_42001_coverage) * 100).toFixed(1);
+    issues.push(
+      `ISO 42001 coverage ${(policyCopResult.iso_42001_coverage * 100).toFixed(1)}% is below threshold ${(adjustedThresholds.iso_42001 * 100).toFixed(1)}% (shortfall: ${shortfall}%)`
+    );
+    actionableFeedback.push(
+      `Improve ISO 42001 coverage by ${shortfall}% - add missing clauses: ${policyCopResult.missing_clauses
+        .filter((c) => c.framework === "ISO_42001")
+        .slice(0, 3)
+        .map((c) => c.article_ref)
+        .join(", ")}`
+    );
+  } else if (policyCopResult.iso_42001_coverage < thresholds.iso_42001) {
+    warnings.push(
+      `ISO 42001 coverage ${(policyCopResult.iso_42001_coverage * 100).toFixed(1)}% is below target ${(thresholds.iso_42001 * 100).toFixed(0)}% but within acceptable margin`
+    );
+  }
+
+  // Add quality score issues
+  if (qualityScoreResult.issues.length > 0) {
+    issues.push(...qualityScoreResult.issues);
+  }
+
+  // Add actionable feedback based on quality checks
+  if (!qualityScoreResult.checks.structuredFormat) {
+    actionableFeedback.push(
+      "Ensure policy output follows structured format with POLICY-MARKDOWN block delimiters"
+    );
+  }
+
+  if (!qualityScoreResult.checks.metajsonValid) {
+    actionableFeedback.push(
+      "Include valid METAJSON block with policy_type, frameworks_selected, and sections metadata"
+    );
+  }
+
+  if (!qualityScoreResult.checks.frameworkReferences.isValid) {
+    actionableFeedback.push(
+      `Add more framework references (currently ${qualityScoreResult.checks.frameworkReferences.count}, minimum: 5)`
+    );
+  }
+
+  if (qualityScoreResult.checks.placeholderCount > 0) {
+    actionableFeedback.push(
+      `Replace ${qualityScoreResult.checks.placeholderCount} placeholder(s) with actual data from questionnaire`
+    );
+  }
+
+  // Determine overall validity
+  // Policy is valid if:
+  // - Quality score >= 0.7
+  // - All coverage thresholds met (with margin)
+  // - No critical structural issues
+  const isValid =
+    qualityScoreResult.score >= 0.7 &&
+    policyCopResult.gdpr_coverage >= adjustedThresholds.gdpr &&
+    policyCopResult.ai_act_coverage >= adjustedThresholds.ai_act &&
+    policyCopResult.iso_42001_coverage >= adjustedThresholds.iso_42001 &&
+    qualityScoreResult.checks.structuredFormat &&
+    qualityScoreResult.checks.metajsonValid;
+
+  return {
+    isValid,
+    qualityScore: qualityScoreResult.score,
+    issues,
+    warnings,
+    policyCopResult,
+    qualityChecks: qualityScoreResult.checks,
+    actionableFeedback,
+  };
 }

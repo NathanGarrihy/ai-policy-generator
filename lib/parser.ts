@@ -979,3 +979,289 @@ export function removeContactInfoFromMappingAppendix(content: string): string {
   // Reconstruct content
   return beforeAppendix + cleanedAppendix + afterAppendix;
 }
+
+/**
+ * Validates framework reference citations in policy content
+ * Checks citation format accuracy: (GDPR Art. X), (AI Act Art. Y), (ISO 42001 §Z)
+ * Validates article numbers are reasonable (not invalid like "Art. 999")
+ * Returns validation errors for malformed citations
+ */
+export type FrameworkReferenceValidationResult = {
+  isValid: boolean;
+  errors: Array<{
+    citation: string;
+    error: string;
+    position?: number;
+  }>;
+  warnings: Array<{
+    citation: string;
+    warning: string;
+    position?: number;
+  }>;
+  validReferences: Array<{
+    citation: string;
+    framework: "GDPR" | "AI_ACT" | "ISO_42001";
+    articleRef: string;
+    articleNumber: string;
+  }>;
+};
+
+/**
+ * Valid article number ranges for each framework
+ * These are reasonable bounds based on actual framework structures
+ */
+const VALID_ARTICLE_RANGES = {
+  GDPR: {
+    min: 1,
+    max: 99, // GDPR has articles 1-99, with some sub-articles
+    subArticleMax: 5, // Sub-articles typically go up to 5 (e.g., Art. 6.1, Art. 6.2)
+  },
+  AI_ACT: {
+    min: 1,
+    max: 150, // AI Act has articles 1-150+
+    subArticleMax: 10,
+  },
+  ISO_42001: {
+    min: 1,
+    max: 15, // ISO 42001 sections are numbered 1-15 with subsections
+    subArticleMax: 10, // Subsections can go deeper (e.g., §8.2.1)
+  },
+};
+
+/**
+ * Extract article number from a citation string
+ * Returns the numeric part (e.g., "6" from "Art. 6", "8.2" from "§8.2")
+ */
+function extractArticleNumber(citation: string, framework: "GDPR" | "AI_ACT" | "ISO_42001"): string | null {
+  if (framework === "ISO_42001") {
+    // ISO format: §8.2, §8.2.1, etc.
+    const match = citation.match(/§\s*(\d+(?:\.\d+)*)/i);
+    return match ? match[1] : null;
+  } else {
+    // GDPR/AI Act format: Art. 6, Art. 6.1, Article 6, etc.
+    const match = citation.match(/(?:Art\.|Article|Art)\s*(\d+(?:\.\d+)*)/i);
+    return match ? match[1] : null;
+  }
+}
+
+/**
+ * Validate article number is within reasonable range
+ */
+function isValidArticleNumber(
+  articleNum: string,
+  framework: "GDPR" | "AI_ACT" | "ISO_42001"
+): { isValid: boolean; error?: string } {
+  const range = VALID_ARTICLE_RANGES[framework];
+  const parts = articleNum.split(".").map((p) => parseInt(p, 10));
+
+  // Check main article number
+  if (isNaN(parts[0]) || parts[0] < range.min || parts[0] > range.max) {
+    return {
+      isValid: false,
+      error: `Article number ${parts[0]} is outside valid range (${range.min}-${range.max}) for ${framework}`,
+    };
+  }
+
+  // Check sub-articles if present
+  for (let i = 1; i < parts.length; i++) {
+    if (isNaN(parts[i]) || parts[i] < 1 || parts[i] > range.subArticleMax) {
+      return {
+        isValid: false,
+        error: `Sub-article number ${parts[i]} is outside valid range (1-${range.subArticleMax}) for ${framework}`,
+      };
+    }
+  }
+
+  return { isValid: true };
+}
+
+/**
+ * Validate framework reference citations in policy content
+ */
+export function validateFrameworkReferences(
+  content: string
+): FrameworkReferenceValidationResult {
+  const errors: Array<{
+    citation: string;
+    error: string;
+    position?: number;
+  }> = [];
+  const warnings: Array<{
+    citation: string;
+    warning: string;
+    position?: number;
+  }> = [];
+  const validReferences: Array<{
+    citation: string;
+    framework: "GDPR" | "AI_ACT" | "ISO_42001";
+    articleRef: string;
+    articleNumber: string;
+  }> = [];
+
+  if (!content || typeof content !== "string") {
+    return {
+      isValid: false,
+      errors: [{ citation: "", error: "Content is empty or invalid" }],
+      warnings: [],
+      validReferences: [],
+    };
+  }
+
+  // Patterns to match framework citations
+  // GDPR: (GDPR Art. 6), (GDPR Article 6), (GDPR Art 6), (GDPR Art.6)
+  const gdprPattern = /\(GDPR\s+(?:Art\.|Article|Art)\s*([\d\.]+)[^)]*\)/gi;
+  
+  // AI Act: (AI Act Art. 9), (AI Act Article 9), (AI Act Art 9)
+  const aiActPattern = /\(AI\s+Act\s+(?:Art\.|Article|Art)\s*([\d\.]+)[^)]*\)/gi;
+  
+  // ISO 42001: (ISO 42001 §8.2), (ISO 42001 Section 8.2), (ISO 42001 Clause 8.2)
+  const isoPatterns = [
+    /\(ISO\s*42001\s+(?:§|Section|Clause)\s*([\d\.]+)[^)]*\)/gi,
+    /\(ISO-42001\s+(?:§|Section|Clause)\s*([\d\.]+)[^)]*\)/gi,
+  ];
+
+  // Track all citations found
+  const allCitations = new Set<string>();
+
+  // Validate GDPR citations
+  let match;
+  gdprPattern.lastIndex = 0;
+  while ((match = gdprPattern.exec(content)) !== null) {
+    const fullCitation = match[0];
+    const articleNum = match[1].trim();
+
+    if (allCitations.has(fullCitation)) {
+      continue; // Skip duplicates
+    }
+    allCitations.add(fullCitation);
+
+    const validation = isValidArticleNumber(articleNum, "GDPR");
+    if (validation.isValid) {
+      validReferences.push({
+        citation: fullCitation,
+        framework: "GDPR",
+        articleRef: `Art. ${articleNum}`,
+        articleNumber: articleNum,
+      });
+    } else {
+      errors.push({
+        citation: fullCitation,
+        error: validation.error || `Invalid GDPR article number: ${articleNum}`,
+        position: match.index,
+      });
+    }
+  }
+
+  // Validate AI Act citations
+  aiActPattern.lastIndex = 0;
+  while ((match = aiActPattern.exec(content)) !== null) {
+    const fullCitation = match[0];
+    const articleNum = match[1].trim();
+
+    if (allCitations.has(fullCitation)) {
+      continue;
+    }
+    allCitations.add(fullCitation);
+
+    const validation = isValidArticleNumber(articleNum, "AI_ACT");
+    if (validation.isValid) {
+      validReferences.push({
+        citation: fullCitation,
+        framework: "AI_ACT",
+        articleRef: `Art. ${articleNum}`,
+        articleNumber: articleNum,
+      });
+    } else {
+      errors.push({
+        citation: fullCitation,
+        error: validation.error || `Invalid AI Act article number: ${articleNum}`,
+        position: match.index,
+      });
+    }
+  }
+
+  // Validate ISO 42001 citations
+  for (const pattern of isoPatterns) {
+    pattern.lastIndex = 0;
+    while ((match = pattern.exec(content)) !== null) {
+      const fullCitation = match[0];
+      const articleNum = match[1].trim();
+
+      if (allCitations.has(fullCitation)) {
+        continue;
+      }
+      allCitations.add(fullCitation);
+
+      const validation = isValidArticleNumber(articleNum, "ISO_42001");
+      if (validation.isValid) {
+        validReferences.push({
+          citation: fullCitation,
+          framework: "ISO_42001",
+          articleRef: `§${articleNum}`,
+          articleNumber: articleNum,
+        });
+      } else {
+        errors.push({
+          citation: fullCitation,
+          error: validation.error || `Invalid ISO 42001 section number: ${articleNum}`,
+          position: match.index,
+        });
+      }
+    }
+  }
+
+  // Check for malformed citations (missing parentheses, wrong format, etc.)
+  // Look for patterns that look like citations but don't match our valid patterns
+  const malformedPatterns = [
+    // Missing opening parenthesis
+    /GDPR\s+(?:Art\.|Article|Art)\s*[\d\.]+[^)]/gi,
+    /AI\s+Act\s+(?:Art\.|Article|Art)\s*[\d\.]+[^)]/gi,
+    /ISO\s*42001\s+(?:§|Section|Clause)\s*[\d\.]+[^)]/gi,
+    // Missing closing parenthesis
+    /\(GDPR\s+(?:Art\.|Article|Art)\s*[\d\.]+[^(]*$/gi,
+    /\(AI\s+Act\s+(?:Art\.|Article|Art)\s*[\d\.]+[^(]*$/gi,
+    /\(ISO\s*42001\s+(?:§|Section|Clause)\s*[\d\.]+[^(]*$/gi,
+  ];
+
+  for (const pattern of malformedPatterns) {
+    pattern.lastIndex = 0;
+    while ((match = pattern.exec(content)) !== null) {
+      const citation = match[0];
+      if (!allCitations.has(citation) && !allCitations.has(`(${citation}`) && !allCitations.has(`${citation})`)) {
+        warnings.push({
+          citation,
+          warning: "Citation appears malformed (missing parentheses or incorrect format)",
+          position: match.index,
+        });
+      }
+    }
+  }
+
+  // Check for citations with incorrect format (e.g., "GDPR Art 999" instead of "GDPR Art. 999")
+  const incorrectFormatPatterns = [
+    // Missing period after "Art"
+    /\(GDPR\s+Art\s+(\d+)\)/gi,
+    /\(AI\s+Act\s+Art\s+(\d+)\)/gi,
+  ];
+
+  for (const pattern of incorrectFormatPatterns) {
+    pattern.lastIndex = 0;
+    while ((match = pattern.exec(content)) !== null) {
+      const citation = match[0];
+      if (!allCitations.has(citation)) {
+        warnings.push({
+          citation,
+          warning: "Citation format should use 'Art.' (with period) instead of 'Art'",
+          position: match.index,
+        });
+      }
+    }
+  }
+
+  return {
+    isValid: errors.length === 0,
+    errors,
+    warnings,
+    validReferences,
+  };
+}
