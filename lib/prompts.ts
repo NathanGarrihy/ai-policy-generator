@@ -251,18 +251,42 @@ Required Sections (include all, even if placeholder-only):
 5. Data Rights & Transparency (GDPR Art. 15-22) and notices (CCPA), in plain English
 6. Data Retention & Deletion (map to GDPR Art. 5, 17)
 7. Security Measures (high-level) (map to GDPR Art. 32, ISO 42001 §8.2)
-8. Contact Information (including DPO/privacy contact)
-9. Mapping Appendix (list all sections with their framework references - EXCLUDE Contact Information as it has no framework references)
-10. Last updated: YYYY-MM-DD (use the actual current date in YYYY-MM-DD format, for example: Last updated: 2024-12-19)
+8. Data Breach Notification (map to GDPR Art. 33, 34)
+9. International Data Transfers (map to GDPR Art. 44, 46, 48)
+10. Contact Information (including DPO/privacy contact)
+11. Mapping Appendix (list all sections with their framework references - EXCLUDE Contact Information as it has no framework references)
+12. Last updated: YYYY-MM-DD (use the actual current date in YYYY-MM-DD format, for example: Last updated: 2024-12-19)
 
-Critical Required Articles (address clearly and cite):
-- GDPR Art. 6: lawful basis for each main processing purpose.
-- GDPR Art. 7: how consent is obtained and withdrawn.
-- GDPR Art. 13: controller identity, purposes, legal basis, retention, rights.
-- GDPR Art. 15-22: main data subject rights and how to exercise them.
-- GDPR Art. 32: key technical and organisational security measures.
+## CRITICAL: GDPR Citation Requirements (MINIMUM 15 GDPR citations required)
+
+You MUST include inline citations for ALL of these GDPR articles:
+- (GDPR Art. 5) - Use when discussing data processing principles (lawfulness, fairness, transparency, purpose limitation, data minimization)
+- (GDPR Art. 6) - Use when explaining lawful basis for processing (consent, contract, legal obligation, legitimate interests)
+- (GDPR Art. 7) - Use when explaining how consent is obtained, that it can be withdrawn, and how to withdraw it
+- (GDPR Art. 13) - Use when providing information about data collection (controller identity, purposes, legal basis, retention, rights)
+- (GDPR Art. 15) - Use when explaining right of access to personal data
+- (GDPR Art. 16) - Use when explaining right to rectification of inaccurate data
+- (GDPR Art. 17) - Use when explaining right to erasure (right to be forgotten)
+- (GDPR Art. 18) - Use when explaining right to restriction of processing
+- (GDPR Art. 20) - Use when explaining right to data portability (receive data in structured, machine-readable format)
+- (GDPR Art. 21) - Use when explaining right to object to processing
+- (GDPR Art. 32) - Use when describing technical and organizational security measures
+- (GDPR Art. 33) - Use when explaining breach notification to supervisory authority within 72 hours
+- (GDPR Art. 34) - Use when explaining communication of breach to affected data subjects
+- (GDPR Art. 44) - Use when discussing international data transfers and safeguards
+- (GDPR Art. 46) - Use when discussing Standard Contractual Clauses or other transfer mechanisms
+- (GDPR Art. 48) - Use when stating we do not transfer data based on unauthorized third-country judgments
+
+Example sentences with citations:
+"We process your personal data based on lawful grounds including consent, contractual necessity, and legitimate interests (GDPR Art. 6)."
+"You may withdraw your consent at any time by contacting us, without affecting the lawfulness of prior processing (GDPR Art. 7)."
+"You have the right to receive your personal data in a structured, commonly used, machine-readable format (GDPR Art. 20)."
+"In the event of a personal data breach likely to result in risk to your rights, we will notify the supervisory authority within 72 hours (GDPR Art. 33)."
+"If a breach is likely to result in high risk to your rights and freedoms, we will communicate the breach to you without undue delay (GDPR Art. 34)."
+"We do not transfer personal data based on court orders or judgments from third countries that are not recognized under EU law (GDPR Art. 48)."
 
 Important:
+- EVERY section MUST have at least one (GDPR Art. X) citation
 - DO NOT use [Action Required: ...] placeholders if the information is provided in Company Details above.
 - Include inline mapping notes in parentheses like "(GDPR Art. 13 – Information to be provided)" or "(ISO 42001 §8.2 – Privacy)".
 - The Mapping Appendix must list each section with its framework references.

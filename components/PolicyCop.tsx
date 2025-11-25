@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import type { PolicyCopResult } from "@/lib/policycop";
+import type { PolicyCopResult, PolicyType } from "@/lib/policycop";
 
 interface PolicyCopProps {
   result: PolicyCopResult;
+  policyType?: PolicyType;
   className?: string;
 }
 
@@ -141,7 +142,9 @@ function needsImprovement(
   return overallScore < 0.7 || section.missing_clauses.length > 0;
 }
 
-export default function PolicyCop({ result, className = "" }: PolicyCopProps) {
+export default function PolicyCop({ result, policyType, className = "" }: PolicyCopProps) {
+  // Determine if AI Act should be shown (not applicable for privacy policies)
+  const showAiAct = policyType !== "privacy_policy";
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
     new Set()
   );
@@ -191,7 +194,7 @@ export default function PolicyCop({ result, className = "" }: PolicyCopProps) {
       <h2 className="text-lg font-semibold">PolicyCop Compliance Score</h2>
 
       {/* Overall Scores */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className={`grid ${showAiAct ? 'grid-cols-3' : 'grid-cols-2'} gap-4`}>
         <div>
           <div className="text-sm text-neutral-600 dark:text-neutral-400">
             GDPR
@@ -212,26 +215,28 @@ export default function PolicyCop({ result, className = "" }: PolicyCopProps) {
             />
           </div>
         </div>
-        <div>
-          <div className="text-sm text-neutral-600 dark:text-neutral-400">
-            AI Act
+        {showAiAct && (
+          <div>
+            <div className="text-sm text-neutral-600 dark:text-neutral-400">
+              AI Act
+            </div>
+            <div className="text-2xl font-bold">
+              {Math.round(result.ai_act_coverage * 100)}%
+            </div>
+            <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full h-2 mt-1">
+              <div
+                className={`h-2 rounded-full ${
+                  result.ai_act_coverage >= 0.7
+                    ? "bg-green-600"
+                    : result.ai_act_coverage >= 0.5
+                    ? "bg-yellow-600"
+                    : "bg-red-600"
+                }`}
+                style={{ width: `${result.ai_act_coverage * 100}%` }}
+              />
+            </div>
           </div>
-          <div className="text-2xl font-bold">
-            {Math.round(result.ai_act_coverage * 100)}%
-          </div>
-          <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full h-2 mt-1">
-            <div
-              className={`h-2 rounded-full ${
-                result.ai_act_coverage >= 0.7
-                  ? "bg-green-600"
-                  : result.ai_act_coverage >= 0.5
-                  ? "bg-yellow-600"
-                  : "bg-red-600"
-              }`}
-              style={{ width: `${result.ai_act_coverage * 100}%` }}
-            />
-          </div>
-        </div>
+        )}
         <div>
           <div className="text-sm text-neutral-600 dark:text-neutral-400">
             ISO 42001
@@ -322,7 +327,7 @@ export default function PolicyCop({ result, className = "" }: PolicyCopProps) {
                   {isExpanded && (
                     <div className="px-4 pb-4 space-y-4 border-t border-neutral-200 dark:border-neutral-700 pt-4">
                       {/* Section Coverage Scores */}
-                      <div className="grid grid-cols-3 gap-3">
+                      <div className={`grid ${showAiAct ? 'grid-cols-3' : 'grid-cols-2'} gap-3`}>
                         <div>
                           <div className="text-xs text-neutral-600 dark:text-neutral-400 mb-1">
                             GDPR
@@ -345,28 +350,30 @@ export default function PolicyCop({ result, className = "" }: PolicyCopProps) {
                             />
                           </div>
                         </div>
-                        <div>
-                          <div className="text-xs text-neutral-600 dark:text-neutral-400 mb-1">
-                            AI Act
+                        {showAiAct && (
+                          <div>
+                            <div className="text-xs text-neutral-600 dark:text-neutral-400 mb-1">
+                              AI Act
+                            </div>
+                            <div className="text-lg font-semibold">
+                              {Math.round(section.ai_act_coverage * 100)}%
+                            </div>
+                            <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full h-1.5 mt-1">
+                              <div
+                                className={`h-1.5 rounded-full ${
+                                  section.ai_act_coverage >= 0.7
+                                    ? "bg-green-600"
+                                    : section.ai_act_coverage >= 0.5
+                                    ? "bg-yellow-600"
+                                    : "bg-red-600"
+                                }`}
+                                style={{
+                                  width: `${section.ai_act_coverage * 100}%`,
+                                }}
+                              />
+                            </div>
                           </div>
-                          <div className="text-lg font-semibold">
-                            {Math.round(section.ai_act_coverage * 100)}%
-                          </div>
-                          <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full h-1.5 mt-1">
-                            <div
-                              className={`h-1.5 rounded-full ${
-                                section.ai_act_coverage >= 0.7
-                                  ? "bg-green-600"
-                                  : section.ai_act_coverage >= 0.5
-                                  ? "bg-yellow-600"
-                                  : "bg-red-600"
-                              }`}
-                              style={{
-                                width: `${section.ai_act_coverage * 100}%`,
-                              }}
-                            />
-                          </div>
-                        </div>
+                        )}
                         <div>
                           <div className="text-xs text-neutral-600 dark:text-neutral-400 mb-1">
                             ISO 42001
