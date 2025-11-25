@@ -81,8 +81,8 @@ async function generatePolicyWithValidation(
 
       // Model-specific parameters
       const isGPT35 = modelName.includes("gpt-3.5");
-      const temperature = isGPT35 ? 0.1 : 0.2; // Lower temperature for GPT-3.5-turbo
-      const maxTokens = isGPT35 ? 4000 : undefined; // Limit response length for GPT-3.5-turbo
+      const temperature = isGPT35 ? 0.3 : 0.2; // Balanced temperature for GPT-3.5-turbo
+      const maxTokens = isGPT35 ? 6000 : undefined; // Increased limit for GPT-3.5-turbo to allow complete responses
 
       // Log attempt start
       console.log(`[Policy Generation] Attempt ${attempt}/${maxAttempts} using ${modelName}`);

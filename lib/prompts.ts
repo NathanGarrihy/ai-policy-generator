@@ -65,7 +65,7 @@ Each section: 1–2 concise paragraphs + inline citations using exact formats ab
 
 ## Coverage Thresholds (MUST MEET)
 
-- Privacy Policy: GDPR ≥70%, AI Act ≥40%, ISO 42001 ≥60%
+- Privacy Policy: GDPR ≥70%, ISO 42001 ≥60%
 - AI Usage Policy: GDPR ≥30%, AI Act ≥70%, ISO 42001 ≥70%
 - AI Governance Policy: GDPR ≥20%, AI Act ≥70%, ISO 42001 ≥70%
 
@@ -237,7 +237,6 @@ export function buildPrompt(policyType: string, responses: Answers) {
 
 Coverage Targets:
 - GDPR: ≥70% (Primary focus - privacy policies must comprehensively address GDPR requirements)
-- AI Act: ≥40% (Secondary - privacy policies may reference AI Act for AI-related data processing)
 - ISO 42001: ≥60% (Important - privacy policies should reference ISO 42001 for data handling and privacy management)
 
 Company Details:
