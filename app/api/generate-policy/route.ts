@@ -9,9 +9,49 @@ import { buildPromptForModel, buildPrompt } from "@/lib/prompts";
 import {
   analyzePolicyCompliance,
   validatePolicyQuality,
+  getPolicyThresholds,
   type PolicyType,
   type PolicyCopResult,
 } from "@/lib/policycop";
+
+type QualityTier = "standard" | "premium";
+
+type ModelInfo = {
+  id: string;
+  temperature: number;
+  maxTokens?: number;
+};
+
+const MODEL_CONFIG: Record<QualityTier, ModelInfo[]> = {
+  standard: [
+    {
+      // Cheap, capable default model for standard mode
+      id: process.env.OPENAI_STANDARD_MODEL ?? "gpt-3.5-turbo",
+      temperature: 0.3,
+      maxTokens: 3500,
+    },
+    {
+      // Second attempt still uses the same cheaper model
+      id: process.env.OPENAI_STANDARD_MODEL ?? "gpt-3.5-turbo",
+      temperature: 0.3,
+      maxTokens: 3500,
+    },
+  ],
+  premium: [
+    {
+      // First attempt: cheaper model
+      id: process.env.OPENAI_PREMIUM_BASE_MODEL ?? "gpt-3.5-turbo",
+      temperature: 0.3,
+      maxTokens: 3500,
+    },
+    {
+      // Fallback attempt: single GPT-4-class model (cheaper variant by default)
+      id: process.env.OPENAI_PREMIUM_FALLBACK_MODEL ?? "gpt-4o",
+      temperature: 0.2,
+      maxTokens: 3500,
+    },
+  ],
+};
 
 type GenerationAttempt = {
   attemptNumber: number;
@@ -24,6 +64,12 @@ type GenerationAttempt = {
   success: boolean;
   error?: string;
   feedback?: string[];
+  tokenUsage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
+  estimatedCostUsd?: number;
 };
 
 type GenerationResult = {
@@ -33,6 +79,24 @@ type GenerationResult = {
   policyCopResult: PolicyCopResult;
   attempts: GenerationAttempt[];
 };
+
+function estimateOpenAICostUsd(
+  model: string,
+  promptTokens: number,
+  completionTokens: number
+): number {
+  // Very rough defaults; override via env vars if needed.
+  const promptPer1K =
+    Number(process.env.OPENAI_COST_PROMPT_PER_1K ?? "") ||
+    (model.includes("gpt-4") ? 0.01 : 0.0015);
+  const completionPer1K =
+    Number(process.env.OPENAI_COST_COMPLETION_PER_1K ?? "") ||
+    (model.includes("gpt-4") ? 0.03 : 0.002);
+
+  const promptCost = (promptTokens / 1000) * promptPer1K;
+  const completionCost = (completionTokens / 1000) * completionPer1K;
+  return Number((promptCost + completionCost).toFixed(6));
+}
 
 /**
  * Generate policy with validation and retry logic
@@ -44,19 +108,23 @@ async function generatePolicyWithValidation(
   apiKey: string,
   questionnaireData: Record<string, any>,
   policyType: PolicyType,
-  promptPolicyType: string
+  promptPolicyType: string,
+  qualityTier: QualityTier
 ): Promise<GenerationResult> {
   const attempts: GenerationAttempt[] = [];
-  const maxAttempts = 3;
-  const qualityThreshold = 0.8;
+  // Quality/cost tier configuration
+  const maxAttempts = 2;
+  const qualityThreshold = qualityTier === "premium" ? 0.6 : 0.5;
   let lastFeedback: string[] = [];
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const attemptStartTime = Date.now();
     const isLastAttempt = attempt === maxAttempts;
     
-    // Determine model: GPT-3.5-turbo for first 2 attempts, GPT-4 for last attempt
-    const modelName = isLastAttempt ? "gpt-4" : "gpt-3.5-turbo";
+    // Determine model from central MODEL_CONFIG based on tier and attempt number
+    const tierModels = MODEL_CONFIG[qualityTier];
+    const attemptIndex = Math.min(attempt - 1, tierModels.length - 1);
+    const { id: modelName, temperature, maxTokens } = tierModels[attemptIndex];
     
     const attemptLog: GenerationAttempt = {
       attemptNumber: attempt,
@@ -78,11 +146,6 @@ async function generatePolicyWithValidation(
         const feedbackText = `\n\n## Previous Attempt Feedback:\n\nPrevious attempt had insufficient coverage or quality issues:\n${lastFeedback.map(f => `- ${f}`).join("\n")}\n\nPlease address these issues in your response.`;
         userMessage = userMessage + feedbackText;
       }
-
-      // Model-specific parameters
-      const isGPT35 = modelName.includes("gpt-3.5");
-      const temperature = isGPT35 ? 0.3 : 0.2; // Balanced temperature for GPT-3.5-turbo
-      const maxTokens = isGPT35 ? 6000 : undefined; // Increased limit for GPT-3.5-turbo to allow complete responses
 
       // Log attempt start
       console.log(`[Policy Generation] Attempt ${attempt}/${maxAttempts} using ${modelName}`);
@@ -178,9 +241,26 @@ async function generatePolicyWithValidation(
         }
       );
 
+      // Track token usage and estimate cost for this attempt
+      const promptTokens = data.usage?.prompt_tokens ?? 0;
+      const completionTokens = data.usage?.completion_tokens ?? 0;
+      const totalTokens =
+        data.usage?.total_tokens ?? promptTokens + completionTokens;
+      const estimatedCost = estimateOpenAICostUsd(
+        modelName,
+        promptTokens,
+        completionTokens
+      );
+
       const qualityScore = qualityValidation.qualityScore;
       attemptLog.qualityScore = qualityScore;
       attemptLog.policyCopResult = policyCopResult;
+      attemptLog.tokenUsage = {
+        promptTokens,
+        completionTokens,
+        totalTokens,
+      };
+      attemptLog.estimatedCostUsd = estimatedCost;
       attemptLog.endTime = Date.now();
       attemptLog.duration = attemptLog.endTime - attemptLog.startTime;
 
@@ -193,13 +273,32 @@ async function generatePolicyWithValidation(
         iso42001Coverage: (policyCopResult.iso_42001_coverage * 100).toFixed(1) + "%",
         duration: `${attemptLog.duration}ms`,
         retryCount: attempt - 1,
+        tokenUsage: attemptLog.tokenUsage,
+        estimatedCostUsd: attemptLog.estimatedCostUsd,
       });
 
       // Check if quality is acceptable
       const meetsQualityThreshold = qualityScore >= qualityThreshold;
-      const meetsCoverageThresholds = qualityValidation.isValid;
 
-      if (meetsQualityThreshold && meetsCoverageThresholds) {
+      // Compute coverage thresholds directly from PolicyCop result, with a small margin
+      const thresholds = getPolicyThresholds(policyType);
+      const margin = qualityTier === "premium" ? 0 : 0.1;
+      const adjustedThresholds = {
+        gdpr: thresholds.gdpr * (1 - margin),
+        ai_act: thresholds.ai_act * (1 - margin),
+        iso_42001: thresholds.iso_42001 * (1 - margin),
+      };
+
+      const meetsCoverageThresholds =
+        policyCopResult.gdpr_coverage >= adjustedThresholds.gdpr &&
+        policyCopResult.ai_act_coverage >= adjustedThresholds.ai_act &&
+        policyCopResult.iso_42001_coverage >= adjustedThresholds.iso_42001;
+
+      const hasValidStructure =
+        qualityValidation.qualityChecks.structuredFormat &&
+        qualityValidation.qualityChecks.metajsonValid;
+
+      if (meetsQualityThreshold && meetsCoverageThresholds && hasValidStructure) {
         // Success! Return the result
         attemptLog.success = true;
         attempts.push(attemptLog);
@@ -216,10 +315,11 @@ async function generatePolicyWithValidation(
       } else {
         // Quality or coverage insufficient - prepare feedback for retry
         attemptLog.success = false;
+        const MAX_FEEDBACK_ITEMS = 10;
         lastFeedback = [
           ...qualityValidation.issues,
           ...qualityValidation.actionableFeedback,
-        ];
+        ].slice(0, MAX_FEEDBACK_ITEMS);
         
         // Add specific missing clauses if available
         if (policyCopResult.missing_clauses.length > 0) {
@@ -236,7 +336,9 @@ async function generatePolicyWithValidation(
         
         // If this was the last attempt, return anyway (fallback to GPT-4 should have been used)
         if (isLastAttempt) {
-          console.log(`[Policy Generation] Last attempt completed but quality below threshold. Returning result anyway.`);
+          console.log(
+            `[Policy Generation] Last attempt completed but quality below threshold. Returning result anyway.`
+          );
           return {
             rawContent,
             parsed,
@@ -274,7 +376,7 @@ export async function POST(req: Request) {
   
   try {
     const body = await req.json();
-    const { questionnaireData, policyType, model } = body;
+    const { questionnaireData, policyType, model, qualityTier, mode } = body;
 
     if (!questionnaireData || !policyType) {
       return NextResponse.json(
@@ -300,12 +402,18 @@ export async function POST(req: Request) {
       ? "ai-governance-policy"
       : policyType;
 
+    // Normalize quality tier (default to standard). Support both `qualityTier` and legacy `mode`.
+    const requestedTier = (qualityTier ?? mode) as string | undefined;
+    const normalizedTier: QualityTier =
+      requestedTier === "premium" ? "premium" : "standard";
+
     // Generate policy with validation and retry logic
     const generationResult = await generatePolicyWithValidation(
       apiKey,
       questionnaireData,
       policyType as PolicyType,
-      promptPolicyType
+      promptPolicyType,
+      normalizedTier
     );
 
     // Replace date placeholders and outdated dates with current date
@@ -328,24 +436,39 @@ export async function POST(req: Request) {
 
     // Calculate total generation time
     const totalDuration = Date.now() - requestStartTime;
-    const successfulAttempt = generationResult.attempts.find(a => a.success) || generationResult.attempts[generationResult.attempts.length - 1];
+    const successfulAttempt =
+      generationResult.attempts.find((a) => a.success) ||
+      generationResult.attempts[generationResult.attempts.length - 1];
+
+    const totalEstimatedCostUsd = generationResult.attempts.reduce(
+      (sum, a) => sum + (a.estimatedCostUsd ?? 0),
+      0
+    );
 
     // Log final generation summary
     console.log(`[Policy Generation] Completed:`, {
       policyType,
       finalModel: successfulAttempt.model,
       qualityScore: generationResult.qualityScore.toFixed(3),
-      gdprCoverage: (generationResult.policyCopResult.gdpr_coverage * 100).toFixed(1) + "%",
-      aiActCoverage: (generationResult.policyCopResult.ai_act_coverage * 100).toFixed(1) + "%",
-      iso42001Coverage: (generationResult.policyCopResult.iso_42001_coverage * 100).toFixed(1) + "%",
+      gdprCoverage:
+        (generationResult.policyCopResult.gdpr_coverage * 100).toFixed(1) + "%",
+      aiActCoverage:
+        (generationResult.policyCopResult.ai_act_coverage * 100).toFixed(1) +
+        "%",
+      iso42001Coverage:
+        (generationResult.policyCopResult.iso_42001_coverage * 100).toFixed(1) +
+        "%",
       totalDuration: `${totalDuration}ms`,
       retryCount: generationResult.attempts.length - 1,
-      attempts: generationResult.attempts.map(a => ({
+      totalEstimatedCostUsd: Number(totalEstimatedCostUsd.toFixed(6)),
+      attempts: generationResult.attempts.map((a) => ({
         attempt: a.attemptNumber,
         model: a.model,
         success: a.success,
         qualityScore: a.qualityScore?.toFixed(3),
         duration: a.duration ? `${a.duration}ms` : undefined,
+        estimatedCostUsd: a.estimatedCostUsd,
+        tokenUsage: a.tokenUsage,
       })),
     });
 

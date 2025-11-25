@@ -1981,7 +1981,7 @@ export function validatePolicyQuality(
   // - All coverage thresholds met (with margin)
   // - No critical structural issues
   const isValid =
-    qualityScoreResult.score >= 0.7 &&
+    qualityScoreResult.score >= 0.6 &&
     policyCopResult.gdpr_coverage >= adjustedThresholds.gdpr &&
     policyCopResult.ai_act_coverage >= adjustedThresholds.ai_act &&
     policyCopResult.iso_42001_coverage >= adjustedThresholds.iso_42001 &&
