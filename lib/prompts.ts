@@ -114,17 +114,74 @@ export function buildPromptForModel(
     
     return `${SYSTEM_PROMPT_BASE}
 
-## GPT-3.5-TURBO: Instructions
+## GPT-3.5-TURBO: CRITICAL FORMAT REQUIREMENTS
 
-1. Write complete policy content in Markdown using headings (# Section Title).
-2. Use 1–2 concise paragraphs per section with inline citations: (GDPR Art. 6), (AI Act Art. 9), (ISO 42001 §8.2).
-3. Wrap the policy with the POLICY-MARKDOWN delimiters shown above.
-4. Create a METAJSON block:
-   - Set "policy_type" to "${policyTypeNormalized}".
-   - Include an entry in "sections" for each section that has framework_refs.
-5. Wrap METAJSON with the POLICY-METAJSON delimiters shown above.
+**YOU MUST FOLLOW THIS EXACT STRUCTURE:**
 
-Citation formats MUST exactly match the formats listed in the Citation section.`;
+Step 1: Write your complete policy content in Markdown format with section headings.
+
+Step 2: Wrap the ENTIRE policy content with these EXACT delimiters (copy them exactly):
+-----BEGIN POLICY-MARKDOWN-----
+[Your complete policy markdown content goes here]
+-----END POLICY-MARKDOWN-----
+
+Step 3: Create a METAJSON block with this EXACT structure:
+-----BEGIN POLICY-METAJSON-----
+{
+  "policy_type": "${policyTypeNormalized}",
+  "placeholders_present": false,
+  "jurisdictions": [],
+  "coverage": { "gdpr": 0, "ai_act": 0, "iso_42001": 0 },
+  "sections": [
+    {
+      "id": "sec_intro",
+      "title": "Introduction & Scope",
+      "framework_refs": ["GDPR Art. 13"]
+    }
+  ]
+}
+-----END POLICY-METAJSON-----
+
+**EXAMPLE OUTPUT STRUCTURE:**
+
+-----BEGIN POLICY-MARKDOWN-----
+# Introduction & Scope
+
+This policy describes how we handle personal data (GDPR Art. 13).
+
+# Data Collection
+
+We collect data for processing purposes (GDPR Art. 6).
+-----END POLICY-MARKDOWN-----
+
+-----BEGIN POLICY-METAJSON-----
+{
+  "policy_type": "${policyTypeNormalized}",
+  "placeholders_present": false,
+  "jurisdictions": ["GDPR_EU"],
+  "coverage": { "gdpr": 0, "ai_act": 0, "iso_42001": 0 },
+  "sections": [
+    {
+      "id": "sec_intro",
+      "title": "Introduction & Scope",
+      "framework_refs": ["GDPR Art. 13"]
+    },
+    {
+      "id": "sec_data_collection",
+      "title": "Data Collection",
+      "framework_refs": ["GDPR Art. 6"]
+    }
+  ]
+}
+-----END POLICY-METAJSON-----
+
+**CRITICAL REMINDERS:**
+- Use EXACT delimiter format: -----BEGIN POLICY-MARKDOWN----- and -----END POLICY-MARKDOWN-----
+- Use EXACT delimiter format: -----BEGIN POLICY-METAJSON----- and -----END POLICY-METAJSON-----
+- Citation formats MUST be exactly: (GDPR Art. 6), (AI Act Art. 9), (ISO 42001 §8.2)
+- Do NOT add any text before or after the delimiter blocks
+- Do NOT use code fences (\`\`\`) around the blocks
+- The METAJSON must be valid JSON (no trailing commas, proper quotes)`;
   } else {
     // For GPT-4 and higher models, keep instructions closer to base with minimal clarifications
     return `${SYSTEM_PROMPT_BASE}
@@ -289,7 +346,7 @@ Return only the policy content.
 
 Coverage Targets:
 - GDPR: ≥30% (Secondary - AI usage policies focus on AI Act compliance, GDPR is relevant for data handling)
-- AI Act: ≥70% (Primary focus - AI usage policies must comprehensively address AI Act requirements)
+- AI Act: ≥70% (PRIMARY FOCUS - AI usage policies MUST comprehensively address AI Act requirements with explicit citations)
 - ISO 42001: ≥70% (Primary focus - AI usage policies should comprehensively address ISO 42001 for AI system management)
 
 Company Details:
@@ -303,33 +360,46 @@ Company Details:
 - Responsible Person: ${responsiblePerson}
 - Responsible Person Contact: ${responsiblePersonContact}
 
-Required Sections (include all, even if placeholder-only):
-1. Scope and Purpose of AI Usage (map to AI Act Art. 3, ISO 42001 §6)
-2. AI Use Cases and Applications (map to AI Act Art. 4, ISO 42001 §6.2)
-3. Data Handling and Privacy Considerations (map to AI Act Art. 10, GDPR Art. 5, ISO 42001 §8.2)
-4. Human Oversight Procedures (map to AI Act Art. 14, ISO 42001 §7.3)
-5. Risk Management and Classification (map to AI Act Art. 8, 9, ISO 42001 §8.1)
-6. Model Governance and Retraining Procedures (map to AI Act Art. 10, ISO 42001 §8.3)
-7. Responsibilities and Accountability (map to AI Act Art. 6, ISO 42001 §5.3)
+Required Sections (MUST include AI Act citations in each AI-related section):
+1. Scope and Purpose of AI Usage (MUST cite: AI Act Art. 3 for definitions, ISO 42001 §6)
+2. AI Use Cases and Applications (MUST cite: AI Act Art. 4 for prohibited practices, AI Act Art. 52 for transparency, ISO 42001 §6.2)
+3. Data Handling and Privacy Considerations (MUST cite: AI Act Art. 10 for data governance, GDPR Art. 5, ISO 42001 §8.2)
+4. Human Oversight Procedures (MUST cite: AI Act Art. 14 for human oversight, ISO 42001 §7.3)
+5. Risk Management and Classification (MUST cite: AI Act Art. 6 for classification, AI Act Art. 9 for risk management, ISO 42001 §8.1)
+6. Model Governance and Retraining Procedures (MUST cite: AI Act Art. 10, AI Act Art. 11 for documentation, ISO 42001 §8.3)
+7. Responsibilities and Accountability (MUST cite: AI Act Art. 26 for provider obligations, ISO 42001 §5.3)
 8. Contact Information for responsible person
 9. Mapping Appendix (list all sections with their framework references)
 10. Last updated: YYYY-MM-DD (use the actual current date in YYYY-MM-DD format, for example: Last updated: 2024-12-19)
 
-Critical Required Articles (address clearly and cite):
-- AI Act Art. 3: scope and key AI system definitions used by the company.
-- AI Act Art. 4: confirm prohibited practices are not used.
-- AI Act Art. 8–9: describe risk classification and risk management.
-- AI Act Art. 10: explain data governance and training data quality.
-- AI Act Art. 14: describe ${humanOversightLevel} human oversight and intervention.
-- AI Act Art. 6: explain how AI systems are classified and whether they are high-risk.
+## CRITICAL: AI Act Citation Requirements (MINIMUM 10 AI Act citations required)
+
+You MUST include inline citations for ALL of these AI Act articles:
+- (AI Act Art. 3) - Use in Scope section when defining AI systems
+- (AI Act Art. 4) - Use when discussing prohibited practices we avoid
+- (AI Act Art. 5) - Use when discussing AI literacy and training
+- (AI Act Art. 6) - Use when classifying AI system risk levels
+- (AI Act Art. 9) - Use when describing risk management procedures
+- (AI Act Art. 10) - Use when discussing data governance and quality
+- (AI Act Art. 11) - Use when discussing documentation requirements
+- (AI Act Art. 12) - Use when discussing logging and record-keeping
+- (AI Act Art. 13) - Use when discussing transparency to users
+- (AI Act Art. 14) - Use when describing ${humanOversightLevel} human oversight
+- (AI Act Art. 26) - Use when discussing compliance and quality management
+- (AI Act Art. 52) - Use when discussing transparency for AI interactions
+- (AI Act Art. 73) - Use when discussing incident reporting
+
+Example sentence with citation:
+"We classify our AI systems according to their risk level and intended purpose (AI Act Art. 6). Our AI systems are not used for prohibited practices such as subliminal manipulation or social scoring (AI Act Art. 4)."
 
 Important:
-- DO NOT use [Action Required: ...] placeholders if the information is provided in Company Details above, including Responsible Person name and contact.
-- Include inline mapping notes like "(AI Act Art. 9 – Risk Management)" or "(ISO 42001 §6.2 – AI System Life Cycle)".
-- The Mapping Appendix must list each section with its framework references.
-- Set policy_type to "ai_usage" in METAJSON.
-- Set jurisdictions to [] (empty array for AI Usage Policy).
-- Set placeholders_present to true if any [Action Required: ...] appears in the policy.
+- EVERY section about AI MUST have at least one (AI Act Art. X) citation
+- DO NOT use [Action Required: ...] placeholders if the information is provided in Company Details above
+- Include inline mapping notes like "(AI Act Art. 9 – Risk Management)" or "(ISO 42001 §6.2 – AI System Life Cycle)"
+- The Mapping Appendix must list each section with its framework references
+- Set policy_type to "ai_usage" in METAJSON
+- Set jurisdictions to [] (empty array for AI Usage Policy)
+- Set placeholders_present to true if any [Action Required: ...] appears in the policy
     `.trim();
   }
 
@@ -374,7 +444,7 @@ Important:
 
 Coverage Targets:
 - GDPR: ≥20% (Minimal - AI governance policies focus on governance structures, GDPR is minimal)
-- AI Act: ≥70% (Primary focus - AI governance policies must comprehensively address AI Act governance requirements)
+- AI Act: ≥70% (PRIMARY FOCUS - AI governance policies MUST comprehensively address AI Act requirements with explicit citations)
 - ISO 42001: ≥70% (Primary focus - AI governance policies should comprehensively address ISO 42001 governance requirements)
 
 Company Details:
@@ -387,34 +457,49 @@ Company Details:
 - Training Provided: ${trainingProvided}
 - Incident Reporting Procedure: ${incidentReportingProcedure}
 
-Required Sections (include all, even if placeholder-only):
-1. Governance Framework and Organizational Structure (map to AI Act Art. 6, ISO 42001 §5)
-2. Responsible AI Principles (Transparency, Fairness, Accountability) (map to AI Act Art. 10, ISO 42001 §4.2)
-3. Documentation and Review Procedures (map to AI Act Art. 11, ISO 42001 §8.4)
-4. Training and Awareness Programs (map to AI Act Art. 4, ISO 42001 §7.2)
-5. Incident Reporting and Response Procedures (map to AI Act Art. 73, ISO 42001 §8.5)
-6. Monitoring and Continuous Improvement (map to AI Act Art. 12, ISO 42001 §10)
-7. Compliance and Audit Procedures (map to AI Act Art. 26, ISO 42001 §9)
+Required Sections (MUST include AI Act citations in each section):
+1. Governance Framework and Organizational Structure (MUST cite: AI Act Art. 6, AI Act Art. 26 for provider obligations, ISO 42001 §5)
+2. Responsible AI Principles (Transparency, Fairness, Accountability) (MUST cite: AI Act Art. 10, AI Act Art. 13 for transparency, AI Act Art. 27 for fundamental rights, ISO 42001 §4.2)
+3. Documentation and Review Procedures (MUST cite: AI Act Art. 11 for documentation, AI Act Art. 12 for record-keeping, ISO 42001 §8.4)
+4. Training and Awareness Programs (MUST cite: AI Act Art. 5 for AI literacy, AI Act Art. 4 for prohibited practices, ISO 42001 §7.2)
+5. Incident Reporting and Response Procedures (MUST cite: AI Act Art. 73 for incident reporting, ISO 42001 §8.5)
+6. Monitoring and Continuous Improvement (MUST cite: AI Act Art. 9 for risk management, AI Act Art. 12, ISO 42001 §10)
+7. Compliance and Audit Procedures (MUST cite: AI Act Art. 26 for compliance, AI Act Art. 8, ISO 42001 §9)
 8. Contact Information for governance owner
 9. Mapping Appendix (list all sections with their framework references)
 10. Last updated: YYYY-MM-DD (use the actual current date in YYYY-MM-DD format, for example: Last updated: 2024-12-19)
 
-Critical Required Articles (address clearly and cite):
-- AI Act Art. 6: governance structure, roles, and responsibilities.
-- AI Act Art. 10: transparency, explainability, and communication of AI decisions.
-- AI Act Art. 11: documentation scope and ${documentationFrequency} review cadence.
-- AI Act Art. 12: monitoring procedures and continuous improvement.
-- AI Act Art. 26: compliance verification and audit procedures.
-- AI Act Art. 73: incident reporting, escalation, and response.
+## CRITICAL: AI Act Citation Requirements (MINIMUM 12 AI Act citations required)
+
+You MUST include inline citations for ALL of these AI Act articles:
+- (AI Act Art. 3) - Use when defining AI systems and scope
+- (AI Act Art. 4) - Use when discussing prohibited practices employees must avoid
+- (AI Act Art. 5) - Use when discussing AI literacy and training requirements
+- (AI Act Art. 6) - Use when discussing governance structure and risk classification
+- (AI Act Art. 8) - Use when discussing compliance requirements
+- (AI Act Art. 9) - Use when describing risk management system
+- (AI Act Art. 10) - Use when discussing transparency and data governance
+- (AI Act Art. 11) - Use when discussing ${documentationFrequency} documentation and review
+- (AI Act Art. 12) - Use when discussing monitoring, logging, and record-keeping
+- (AI Act Art. 13) - Use when discussing transparency obligations
+- (AI Act Art. 14) - Use when discussing human oversight requirements
+- (AI Act Art. 26) - Use when discussing provider obligations and compliance verification
+- (AI Act Art. 27) - Use when discussing fundamental rights impact assessment
+- (AI Act Art. 52) - Use when discussing transparency for AI systems
+- (AI Act Art. 73) - Use when discussing incident reporting and escalation procedures
+
+Example sentence with citation:
+"The ${aiGovernanceOwnerRole} is responsible for ensuring our AI systems comply with regulatory requirements (AI Act Art. 26). We maintain comprehensive documentation of all AI systems (AI Act Art. 11) and ensure transparency in AI decision-making (AI Act Art. 10)."
 
 Important:
-- DO NOT use [Action Required: ...] placeholders if the information is provided in Company Details above, including AI Governance Owner name, role, and contact information.
-- For Incident Reporting Procedure: if details are provided in Company Details, use them directly. Only use a placeholder if truly missing.
-- Include inline mapping notes like "(AI Act Art. 10 – Transparency)" or "(ISO 42001 §5.3 – Roles, Responsibilities and Authorities)".
-- The Mapping Appendix must list each section with its framework references.
-- Set policy_type to "ai_governance" in METAJSON.
-- Set jurisdictions to [] (empty array for AI Governance Policy).
-- Set placeholders_present to true if any [Action Required: ...] appears in the policy.
+- EVERY section MUST have at least one (AI Act Art. X) citation
+- DO NOT use [Action Required: ...] placeholders if the information is provided in Company Details above
+- For Incident Reporting Procedure: if details are provided in Company Details, use them directly
+- Include inline mapping notes like "(AI Act Art. 10 – Transparency)" or "(ISO 42001 §5.3 – Roles, Responsibilities and Authorities)"
+- The Mapping Appendix must list each section with its framework references
+- Set policy_type to "ai_governance" in METAJSON
+- Set jurisdictions to [] (empty array for AI Governance Policy)
+- Set placeholders_present to true if any [Action Required: ...] appears in the policy
     `.trim();
   }
 

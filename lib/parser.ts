@@ -81,21 +81,92 @@ export function parsePolicyOutput(rawContent: string): ParsedPolicy {
     };
   }
 
-  // Fallback: if no structured format, return the entire content
-  // This handles cases where OpenAI doesn't follow the format exactly
-  // or for backwards compatibility
-  // Also clean up any obvious delimiter artifacts that might have been left
+  // Fallback: intelligent parsing when structured format not detected
+  // Attempt to extract content more intelligently:
+  // 1. Look for markdown headings as section boundaries
+  // 2. Detect if JSON block exists anywhere (for METAJSON)
+  // 3. Validate partial structure and repair if possible
+  
   let fallbackContent = rawContent.trim();
+  let fallbackMetadata: PolicyMetadata | null = null;
+  let hasPartialStructure = false;
+
+  // Try to find JSON block anywhere in the content (might be outside delimiters)
+  // Look for JSON objects that might be METAJSON
+  const jsonPatterns = [
+    // Look for JSON wrapped in code blocks
+    /```json\s*([\s\S]*?)\s*```/i,
+    /```\s*({[\s\S]*?"policy_type"[\s\S]*?})\s*```/i,
+    // Look for standalone JSON objects with policy_type field
+    /\{[\s\S]*?"policy_type"[\s\S]*?\}/i,
+  ];
+
+  for (const pattern of jsonPatterns) {
+    const jsonMatch = rawContent.match(pattern);
+    if (jsonMatch) {
+      try {
+        const jsonStr = jsonMatch[1] || jsonMatch[0];
+        const cleanedJson = jsonStr
+          .replace(/^```json\s*/i, "")
+          .replace(/^```\s*/, "")
+          .replace(/\s*```$/, "")
+          .trim();
+        const parsed = JSON.parse(cleanedJson) as PolicyMetadata;
+        // Validate it looks like our metadata structure
+        if (parsed.policy_type || parsed.frameworks_selected || parsed.sections) {
+          fallbackMetadata = parsed;
+          hasPartialStructure = true;
+          break;
+        }
+      } catch (e) {
+        // Continue trying other patterns
+      }
+    }
+  }
+
+  // Try to extract policy content by looking for markdown structure
+  // If content starts with markdown headings, it's likely the policy content
+  const lines = fallbackContent.split("\n");
+  const firstHeadingIndex = lines.findIndex((line) => line.match(/^#{1,3}\s+/));
+  
+  if (firstHeadingIndex >= 0) {
+    // Content appears to start with a heading - likely valid policy content
+    // Remove any leading non-markdown content before first heading
+    if (firstHeadingIndex > 0) {
+      // Check if content before first heading looks like instructions or metadata
+      const preHeading = lines.slice(0, firstHeadingIndex).join("\n").toLowerCase();
+      const looksLikeInstructions = 
+        preHeading.includes("generate") ||
+        preHeading.includes("policy") ||
+        preHeading.includes("coverage targets") ||
+        preHeading.includes("company details");
+      
+      if (looksLikeInstructions) {
+        // Skip instruction-like content before first heading
+        fallbackContent = lines.slice(firstHeadingIndex).join("\n").trim();
+        hasPartialStructure = true;
+      }
+    }
+  }
 
   // Remove any standalone delimiter lines that might be in the content
   fallbackContent = fallbackContent
     .replace(/-{3,}\s*(BEGIN|END)\s+POLICY-(MARKDOWN|METAJSON)\s*-{3,}/gi, "")
     .trim();
 
+  // Try to detect if content has partial structure indicators
+  // Check for markdown headings and framework references
+  const hasMarkdownHeadings = /^#{1,3}\s+/m.test(fallbackContent);
+  const hasFrameworkRefs = /(?:GDPR\s+Art\.|AI\s+Act\s+Art\.|ISO\s+42001\s+§)/i.test(fallbackContent);
+  
+  if (hasMarkdownHeadings && hasFrameworkRefs) {
+    hasPartialStructure = true;
+  }
+
   return {
     content: fallbackContent,
-    metadata: null,
-    hasStructure: false,
+    metadata: fallbackMetadata,
+    hasStructure: hasPartialStructure,
   };
 }
 
@@ -211,20 +282,41 @@ export function validateMappingAppendix(content: string): boolean {
   const contentLower = content.toLowerCase();
 
   // Check for various forms of "Mapping Appendix" heading
+  // Support markdown headings (#, ##, ###), bold headings (**), and plain text
   const mappingAppendixPatterns = [
+    // Markdown headings: # Mapping Appendix, ## Mapping Appendix, etc.
     /^#{1,3}\s+mapping\s+appendix/im,
     /^#{1,3}\s+framework\s+mapping/im,
     /^#{1,3}\s+compliance\s+mapping/im,
+    /^#{1,3}\s+appendix\s*:?\s*mapping/im,
+    // Bold headings: **Mapping Appendix**
+    /\*\*mapping\s+appendix\*\*/i,
+    /\*\*framework\s+mapping\*\*/i,
+    /\*\*compliance\s+mapping\*\*/i,
+    // Variations: "Appendix: Framework Mapping", "Framework Mappings", etc.
+    /appendix\s*:?\s*(framework\s+)?mapping/i,
+    /framework\s+mappings/i,
+    // Plain text variations (non-heading formats)
     /mapping\s+appendix/i,
     /framework\s+mapping/i,
   ];
 
   // Check if any pattern matches
   const hasMappingAppendix = mappingAppendixPatterns.some((pattern) => {
-    // Check in headings (lines starting with #)
+    // Check in headings (lines starting with #) and bold headings (**)
     const lines = content.split("\n");
     for (const line of lines) {
-      if (pattern.test(line.trim())) {
+      const trimmedLine = line.trim();
+      // Check markdown headings
+      if (trimmedLine.match(/^#{1,3}\s+/) && pattern.test(trimmedLine)) {
+        return true;
+      }
+      // Check bold headings
+      if (trimmedLine.match(/^\*\*/) && pattern.test(trimmedLine)) {
+        return true;
+      }
+      // Check plain text (for non-heading formats)
+      if (pattern.test(trimmedLine)) {
         return true;
       }
     }
@@ -239,11 +331,18 @@ export function validateMappingAppendix(content: string): boolean {
     );
 
   // Check if there are framework references grouped together (indicating mapping)
+  // More lenient: look for framework refs within reasonable proximity (500 chars)
   const frameworkRefsPattern =
-    /(?:GDPR\s+Art\.|AI\s+Act\s+Art\.|ISO\s+42001\s+§).{0,200}(?:GDPR\s+Art\.|AI\s+Act\s+Art\.|ISO\s+42001\s+§)/im;
+    /(?:GDPR\s+Art\.|AI\s+Act\s+Art\.|ISO\s+42001\s+§).{0,500}(?:GDPR\s+Art\.|AI\s+Act\s+Art\.|ISO\s+42001\s+§)/im;
   const hasGroupedRefs = frameworkRefsPattern.test(content);
 
-  return hasMappingAppendix || (hasMappingTable && hasGroupedRefs);
+  // Additional check: look for mapping appendix content structure
+  // Check if "Mapping Appendix" text appears near framework references
+  // This handles cases where the section exists but isn't detected as a heading
+  const hasMappingTextNearRefs = /mapping\s+appendix.{0,300}(?:GDPR\s+Art\.|AI\s+Act\s+Art\.|ISO\s+42001\s+§)/im.test(content) ||
+    /(?:GDPR\s+Art\.|AI\s+Act\s+Art\.|ISO\s+42001\s+§).{0,300}mapping\s+appendix/im.test(content);
+
+  return hasMappingAppendix || (hasMappingTable && hasGroupedRefs) || hasMappingTextNearRefs;
 }
 
 /**

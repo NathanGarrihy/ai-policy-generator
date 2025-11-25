@@ -40,10 +40,10 @@ export const POLICY_FRAMEWORK_SCOPE: Record<
     iso42001Section82Only: true, // Privacy policy only uses ISO 42001 §8.2
   },
   ai_usage_policy: {
-    frameworks: ["AI_ACT", "ISO_42001"],
+    frameworks: ["GDPR", "AI_ACT", "ISO_42001"],
   },
   ai_governance_policy: {
-    frameworks: ["AI_ACT", "ISO_42001"],
+    frameworks: ["GDPR", "AI_ACT", "ISO_42001"],
   },
 };
 
@@ -1121,8 +1121,9 @@ function checkRuleWithContext(
   );
 
   // For complex rules (multiple keywords), require higher co-occurrence
-  const isComplexRule = rule.keywords.length >= 3;
-  const minCoOccurrenceThreshold = isComplexRule ? 0.4 : 0.25; // Lowered thresholds for better detection
+  // RELAXED: Reduced thresholds significantly for better detection
+  const isComplexRule = rule.keywords.length >= 5; // Increased from 3 to 5 for complex rule threshold
+  const minCoOccurrenceThreshold = isComplexRule ? 0.25 : 0.15; // Reduced from 0.4/0.25 to 0.25/0.15
 
   // Calculate context score based on section name (if provided)
   let contextScore = 1.0;
@@ -1144,6 +1145,7 @@ function checkRuleWithContext(
 
   // Check for content length/substance - make this less strict
   // Check if any window with keywords has reasonable content (not just isolated mentions)
+  // RELAXED: Reduced word count threshold from 30 to 15 for better matching
   let hasSubstantialContent = false;
   if (hasKeywords) {
     // Find windows that contain keywords
@@ -1151,9 +1153,9 @@ function checkRuleWithContext(
       return keywordPositions.some((pos) => pos.windowIndex === idx);
     });
     
-    // Check if any keyword window has reasonable content (>30 words, not just mentions)
+    // Check if any keyword window has reasonable content (>15 words, not just mentions)
     hasSubstantialContent = keywordWindows.some(
-      (window) => window.split(/\s+/).length > 30
+      (window) => window.split(/\s+/).length > 15
     );
   }
 
@@ -1173,16 +1175,17 @@ function checkRuleWithContext(
   // 4. Article refs with keywords nearby (within 2 windows)
   const hasProximityMatch = proximityResult.matched && hasKeywords && hasArticleRefs;
   
-  // Check if keywords and article refs are within 2 windows of each other (more lenient)
+  // Check if keywords and article refs are within nearby windows (more lenient)
+  // RELAXED: Increased window distance from 2 to 4 for better matching across sections
   let hasNearbyMatch = false;
   if (hasKeywords && hasArticleRefs) {
     const keywordWindowIndices = new Set(keywordPositions.map(p => p.windowIndex));
     const articleWindowIndices = new Set(articlePositions.map(p => p.windowIndex));
     
-    // Check if any keyword window is within 2 windows of any article ref window
+    // Check if any keyword window is within 4 windows of any article ref window
     for (const kwIdx of keywordWindowIndices) {
       for (const artIdx of articleWindowIndices) {
-        if (Math.abs(kwIdx - artIdx) <= 2) {
+        if (Math.abs(kwIdx - artIdx) <= 4) {
           hasNearbyMatch = true;
           break;
         }
@@ -1192,29 +1195,38 @@ function checkRuleWithContext(
   }
 
   // Strong keyword presence (even without article refs in proximity)
+  // RELAXED: Further reduced thresholds for better detection of content that addresses clauses
   const hasStrongKeywordPresence =
     hasKeywords &&
-    coOccurrenceResult.coOccurrenceScore >= 0.5 && // Lowered from 0.7
-    coOccurrenceResult.matchedKeywords.length >= Math.max(2, Math.ceil(rule.keywords.length * 0.4)); // Lowered thresholds
+    coOccurrenceResult.coOccurrenceScore >= 0.35 && // Reduced from 0.5 to 0.35
+    coOccurrenceResult.matchedKeywords.length >= Math.max(1, Math.ceil(rule.keywords.length * 0.25)); // Reduced from 2/0.4 to 1/0.25
 
   // Match if:
   // 1. Proximity match with co-occurrence
-  // 2. Keywords and article refs nearby (within 2 windows) with co-occurrence
+  // 2. Keywords and article refs nearby (within 4 windows) with co-occurrence
   // 3. Strong keyword presence with article refs anywhere in document
   // 4. Very strong keyword presence even without article refs (for cases where article ref might be in mapping appendix)
+  // 5. Keywords only match with good co-occurrence (NEW - for better detection)
+  // RELAXED: Removed substantial content requirement for non-required rules
   const hasFullMatch =
     (hasProximityMatch || hasNearbyMatch) &&
     hasKeywordsWithCoOccurrence &&
-    hasMinKeywords &&
-    (!rule.required || hasSubstantialContent);
+    hasMinKeywords;
 
   const hasPartialMatch =
     hasKeywordsAndRefsInDocument &&
     hasKeywordsWithCoOccurrence &&
-    hasMinKeywords &&
-    (!rule.required || hasSubstantialContent);
+    hasMinKeywords;
 
-  const matched = hasFullMatch || hasPartialMatch || hasStrongKeywordPresence;
+  // NEW: Allow keyword-only matches when we have good keyword co-occurrence
+  // This helps match content that addresses clauses without explicit article citations
+  const hasKeywordOnlyMatch =
+    hasKeywords &&
+    !hasArticleRefs &&
+    coOccurrenceResult.coOccurrenceScore >= 0.4 && // Higher threshold for keyword-only matches
+    coOccurrenceResult.matchedKeywords.length >= Math.max(2, Math.ceil(rule.keywords.length * 0.3));
+
+  const matched = hasFullMatch || hasPartialMatch || hasStrongKeywordPresence || hasKeywordOnlyMatch;
 
   return {
     matched,
@@ -1409,9 +1421,10 @@ function checkRule(rule: ComplianceRule, content: string): boolean {
       // Require article refs to appear near keywords for required rules
       if (!hasContextualContent) {
         // Fall through to keyword-only validation
+        // RELAXED: Reduced threshold from 3/0.6 to 2/0.4
         return (
           matchedKeywords.length >=
-          Math.max(3, Math.ceil(rule.keywords.length * 0.6))
+          Math.max(2, Math.ceil(rule.keywords.length * 0.4))
         );
       }
     }
@@ -1420,10 +1433,11 @@ function checkRule(rule: ComplianceRule, content: string): boolean {
 
   // For stronger keyword matching without article refs
   // Require multiple keywords AND substantial content
+  // RELAXED: Significantly reduced thresholds for better matching
   if (keywordMatch && !articleMatch) {
     // Different thresholds for required vs optional rules
-    const minKeywords = rule.required ? 3 : 2;
-    const percentageThreshold = rule.required ? 0.6 : 0.5;
+    const minKeywords = rule.required ? 2 : 1; // Reduced from 3/2 to 2/1
+    const percentageThreshold = rule.required ? 0.4 : 0.3; // Reduced from 0.6/0.5 to 0.4/0.3
     const keywordThreshold = Math.max(
       minKeywords,
       Math.ceil(rule.keywords.length * percentageThreshold)
@@ -1445,8 +1459,8 @@ function checkRule(rule: ComplianceRule, content: string): boolean {
       maxKeywordsInWindow = Math.max(maxKeywordsInWindow, keywordsInWindow);
     }
 
-    // Require at least 50% of matched keywords to appear in same context window
-    const densityThreshold = Math.ceil(matchedKeywords.length * 0.5);
+    // Require at least 30% of matched keywords to appear in same context window (reduced from 50%)
+    const densityThreshold = Math.ceil(matchedKeywords.length * 0.3);
     return maxKeywordsInWindow >= densityThreshold;
   }
 
