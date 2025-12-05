@@ -10,9 +10,22 @@ import {
   analyzePolicyCompliance,
   validatePolicyQuality,
   getPolicyThresholds,
+  buildApplicabilityContext,
   type PolicyType,
   type PolicyCopResult,
 } from "@/lib/policycop";
+import {
+  PrivacyQuestionnaireSchema,
+  AIUsageQuestionnaireSchema,
+  AIGovernanceQuestionnaireSchema,
+} from "@/lib/types";
+import {
+  QUALITY_THRESHOLDS,
+  COVERAGE_MARGINS,
+  TOKEN_LIMITS,
+  GENERATION_CONFIG,
+} from "@/lib/constants";
+import { rateLimitMiddleware, logRateLimitViolation } from "@/lib/rate-limit";
 
 type QualityTier = "standard" | "premium";
 
@@ -28,13 +41,13 @@ const MODEL_CONFIG: Record<QualityTier, ModelInfo[]> = {
       // Cheap, capable default model for standard mode
       id: process.env.OPENAI_STANDARD_MODEL ?? "gpt-3.5-turbo",
       temperature: 0.3,
-      maxTokens: 3500,
+      maxTokens: TOKEN_LIMITS.MAX_TOKENS,
     },
     {
       // Second attempt still uses the same cheaper model
       id: process.env.OPENAI_STANDARD_MODEL ?? "gpt-3.5-turbo",
       temperature: 0.3,
-      maxTokens: 3500,
+      maxTokens: TOKEN_LIMITS.MAX_TOKENS,
     },
   ],
   premium: [
@@ -42,13 +55,13 @@ const MODEL_CONFIG: Record<QualityTier, ModelInfo[]> = {
       // First attempt: cheaper model
       id: process.env.OPENAI_PREMIUM_BASE_MODEL ?? "gpt-3.5-turbo",
       temperature: 0.3,
-      maxTokens: 3500,
+      maxTokens: TOKEN_LIMITS.MAX_TOKENS,
     },
     {
       // Fallback attempt: single GPT-4-class model (cheaper variant by default)
       id: process.env.OPENAI_PREMIUM_FALLBACK_MODEL ?? "gpt-4o",
       temperature: 0.2,
-      maxTokens: 3500,
+      maxTokens: TOKEN_LIMITS.MAX_TOKENS,
     },
   ],
 };
@@ -113,8 +126,10 @@ async function generatePolicyWithValidation(
 ): Promise<GenerationResult> {
   const attempts: GenerationAttempt[] = [];
   // Quality/cost tier configuration
-  const maxAttempts = 2;
-  const qualityThreshold = qualityTier === "premium" ? 0.6 : 0.5;
+  const maxAttempts = GENERATION_CONFIG.MAX_ATTEMPTS;
+  const qualityThreshold = qualityTier === "premium" 
+    ? QUALITY_THRESHOLDS.PREMIUM 
+    : QUALITY_THRESHOLDS.STANDARD;
   let lastFeedback: string[] = [];
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -223,12 +238,16 @@ async function generatePolicyWithValidation(
       // Parse and validate the output
       const parsed = parsePolicyOutput(rawContent);
       
+      // Build applicability context from questionnaire data
+      const applicabilityContext = buildApplicabilityContext(questionnaireData, policyType);
+      
       // Run PolicyCop analysis
       const policyCopResult = analyzePolicyCompliance(
         parsed.content || rawContent,
         policyType,
         {
           frameworks_selected: parsed.metadata?.frameworks_selected,
+          applicabilityContext,
         }
       );
 
@@ -238,6 +257,7 @@ async function generatePolicyWithValidation(
         policyType,
         {
           frameworks_selected: parsed.metadata?.frameworks_selected,
+          applicabilityContext,
         }
       );
 
@@ -280,9 +300,12 @@ async function generatePolicyWithValidation(
       // Check if quality is acceptable
       const meetsQualityThreshold = qualityScore >= qualityThreshold;
 
+      
       // Compute coverage thresholds directly from PolicyCop result, with a small margin
-      const thresholds = getPolicyThresholds(policyType);
-      const margin = qualityTier === "premium" ? 0 : 0.1;
+      const thresholds = getPolicyThresholds(policyType, applicabilityContext);
+      const margin = qualityTier === "premium" 
+        ? COVERAGE_MARGINS.PREMIUM 
+        : COVERAGE_MARGINS.STANDARD;
       const adjustedThresholds = {
         gdpr: thresholds.gdpr * (1 - margin),
         ai_act: thresholds.ai_act * (1 - margin),
@@ -315,16 +338,15 @@ async function generatePolicyWithValidation(
       } else {
         // Quality or coverage insufficient - prepare feedback for retry
         attemptLog.success = false;
-        const MAX_FEEDBACK_ITEMS = 10;
         lastFeedback = [
           ...qualityValidation.issues,
           ...qualityValidation.actionableFeedback,
-        ].slice(0, MAX_FEEDBACK_ITEMS);
+        ].slice(0, GENERATION_CONFIG.MAX_FEEDBACK_ITEMS);
         
         // Add specific missing clauses if available
         if (policyCopResult.missing_clauses.length > 0) {
           const missingClauses = policyCopResult.missing_clauses
-            .slice(0, 5)
+            .slice(0, GENERATION_CONFIG.MAX_MISSING_CLAUSES)
             .map(
               (c) =>
                 `Missing ${c.framework} ${c.article_ref}: ${c.clause_text.substring(0, 100)}`
@@ -375,12 +397,62 @@ export async function POST(req: Request) {
   const requestStartTime = Date.now();
   
   try {
+    // Extract quality tier for rate limiting (before parsing body)
+    const url = new URL(req.url);
+    const qualityTierParam = url.searchParams.get("qualityTier") || "standard";
+    const tier = qualityTierParam === "premium" ? "premium" : "standard";
+    
+    // Apply rate limiting
+    const rateLimitResponse = rateLimitMiddleware(req, tier);
+    if (rateLimitResponse) {
+      // Get identifier for logging
+      const forwarded = req.headers.get("x-forwarded-for");
+      const ip = forwarded ? forwarded.split(",")[0].trim() : "unknown";
+      logRateLimitViolation(ip !== "unknown" ? ip : "anonymous", tier, "/api/generate-policy");
+      return rateLimitResponse;
+    }
+    
     const body = await req.json();
     const { questionnaireData, policyType, model, qualityTier, mode } = body;
 
     if (!questionnaireData || !policyType) {
       return NextResponse.json(
         { error: "questionnaireData and policyType are required" },
+        { status: 400 }
+      );
+    }
+
+    // Validate questionnaire data based on policy type
+    let validatedQuestionnaireData: Record<string, any>;
+    try {
+      if (policyType === "privacy_policy") {
+        validatedQuestionnaireData = PrivacyQuestionnaireSchema.parse(questionnaireData);
+      } else if (policyType === "ai_usage_policy") {
+        validatedQuestionnaireData = AIUsageQuestionnaireSchema.parse(questionnaireData);
+      } else if (policyType === "ai_governance_policy") {
+        validatedQuestionnaireData = AIGovernanceQuestionnaireSchema.parse(questionnaireData);
+      } else {
+        return NextResponse.json(
+          { error: `Invalid policy type: ${policyType}` },
+          { status: 400 }
+        );
+      }
+    } catch (validationError: any) {
+      if (validationError.errors) {
+        // Zod validation error
+        return NextResponse.json(
+          {
+            error: "Validation failed",
+            details: validationError.errors.map((err: any) => ({
+              path: err.path.join("."),
+              message: err.message,
+            })),
+          },
+          { status: 400 }
+        );
+      }
+      return NextResponse.json(
+        { error: "Invalid questionnaire data format" },
         { status: 400 }
       );
     }
@@ -410,7 +482,7 @@ export async function POST(req: Request) {
     // Generate policy with validation and retry logic
     const generationResult = await generatePolicyWithValidation(
       apiKey,
-      questionnaireData,
+      validatedQuestionnaireData,
       policyType as PolicyType,
       promptPolicyType,
       normalizedTier
@@ -420,10 +492,10 @@ export async function POST(req: Request) {
     let contentWithDates = replaceDatePlaceholders(generationResult.parsed.content);
 
     // Replace contact and procedure placeholders with questionnaire data if provided
-    if (questionnaireData && policyType) {
+    if (validatedQuestionnaireData && policyType) {
       contentWithDates = replaceContactPlaceholders(
         contentWithDates,
-        questionnaireData,
+        validatedQuestionnaireData,
         policyType as
           | "privacy_policy"
           | "ai_usage_policy"

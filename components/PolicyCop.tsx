@@ -1,11 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import type { PolicyCopResult, PolicyType } from "@/lib/policycop";
+import {
+  type PolicyCopResult,
+  type PolicyType,
+  type PolicyCoverageThresholds,
+  getPolicyThresholds,
+} from "@/lib/policycop";
+import MandatoryClausesDisplay from "./MandatoryClausesDisplay";
 
 interface PolicyCopProps {
   result: PolicyCopResult;
   policyType?: PolicyType;
+  thresholds?: PolicyCoverageThresholds;
   className?: string;
 }
 
@@ -143,8 +150,21 @@ function needsImprovement(
 }
 
 export default function PolicyCop({ result, policyType, className = "" }: PolicyCopProps) {
-  // Determine if AI Act should be shown (not applicable for privacy policies)
-  const showAiAct = policyType !== "privacy_policy";
+  // Resolve coverage thresholds for colouring and context display
+  const fallbackThresholds: PolicyCoverageThresholds = {
+    gdpr: 0.7,
+    ai_act: 0.7,
+    iso_42001: 0.7,
+  };
+  const resolvedThresholds =
+    thresholds ??
+    (policyType ? getPolicyThresholds(policyType) : null) ??
+    fallbackThresholds;
+
+  // Determine if AI Act should be shown (not applicable for privacy policies
+  // and when AI Act threshold is 0 based on applicability)
+  const showAiAct =
+    policyType !== "privacy_policy" && resolvedThresholds.ai_act > 0;
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
     new Set()
   );
@@ -194,7 +214,7 @@ export default function PolicyCop({ result, policyType, className = "" }: Policy
       <h2 className="text-lg font-semibold">PolicyCop Compliance Score</h2>
 
       {/* Overall Scores */}
-      <div className={`grid ${showAiAct ? 'grid-cols-3' : 'grid-cols-2'} gap-4`}>
+      <div className={`grid ${showAiAct ? "grid-cols-3" : "grid-cols-2"} gap-4`}>
         <div>
           <div className="text-sm text-neutral-600 dark:text-neutral-400">
             GDPR
@@ -205,9 +225,9 @@ export default function PolicyCop({ result, policyType, className = "" }: Policy
           <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full h-2 mt-1">
             <div
               className={`h-2 rounded-full ${
-                result.gdpr_coverage >= 0.7
+                result.gdpr_coverage >= resolvedThresholds.gdpr
                   ? "bg-green-600"
-                  : result.gdpr_coverage >= 0.5
+                  : result.gdpr_coverage >= resolvedThresholds.gdpr * 0.8
                   ? "bg-yellow-600"
                   : "bg-red-600"
               }`}
@@ -226,9 +246,9 @@ export default function PolicyCop({ result, policyType, className = "" }: Policy
             <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full h-2 mt-1">
               <div
                 className={`h-2 rounded-full ${
-                  result.ai_act_coverage >= 0.7
+                  result.ai_act_coverage >= resolvedThresholds.ai_act
                     ? "bg-green-600"
-                    : result.ai_act_coverage >= 0.5
+                    : result.ai_act_coverage >= resolvedThresholds.ai_act * 0.8
                     ? "bg-yellow-600"
                     : "bg-red-600"
                 }`}
@@ -247,9 +267,9 @@ export default function PolicyCop({ result, policyType, className = "" }: Policy
           <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full h-2 mt-1">
             <div
               className={`h-2 rounded-full ${
-                result.iso_42001_coverage >= 0.7
+                result.iso_42001_coverage >= resolvedThresholds.iso_42001
                   ? "bg-green-600"
-                  : result.iso_42001_coverage >= 0.5
+                  : result.iso_42001_coverage >= resolvedThresholds.iso_42001 * 0.8
                   ? "bg-yellow-600"
                   : "bg-red-600"
               }`}
@@ -258,6 +278,13 @@ export default function PolicyCop({ result, policyType, className = "" }: Policy
           </div>
         </div>
       </div>
+
+      {/* Mandatory / required clauses summary */}
+      <MandatoryClausesDisplay
+        result={result}
+        policyType={policyType}
+        className="mt-2"
+      />
 
       {/* Section-Level Display */}
       {result.section_scores.length > 0 && (

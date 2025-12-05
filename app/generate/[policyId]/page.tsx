@@ -7,6 +7,8 @@ import {
   analyzePolicyCompliance,
   extractMappings,
   getPolicyThresholds,
+  buildApplicabilityContext,
+  type PolicyType,
 } from "@/lib/policycop";
 import {
   extractMappingsFromMetadata,
@@ -17,6 +19,7 @@ import {
 } from "@/lib/parser";
 import ReactMarkdown from "react-markdown";
 import ExportButton from "@/components/ExportButton";
+import MandatoryClausesDisplay from "@/components/MandatoryClausesDisplay";
 
 // Map URL policy IDs to database policy types
 function mapPolicyIdToType(policyId: string): string {
@@ -137,12 +140,22 @@ export default function GeneratePolicyPage() {
 
         // Content is already parsed by the API (POLICY-MARKDOWN block extracted)
         const generatedContent = result.content;
-        
-        // Validate policy structure
+
+        // Build applicability context once so structure validation and
+        // PolicyCop share the same view of what applies to this company.
+        const applicabilityContext = buildApplicabilityContext(
+          qData.answers,
+          policyType as "privacy_policy" | "ai_usage_policy" | "ai_governance_policy"
+        );
+
+        // Validate policy structure (now applicability-aware via options)
         const validation = validatePolicyStructure(
           generatedContent,
           policyType as "privacy_policy" | "ai_usage_policy" | "ai_governance_policy",
-          result.metadata
+          result.metadata,
+          {
+            applicabilityContext,
+          }
         );
 
         // Validate last updated footer with enhanced validation
@@ -195,19 +208,21 @@ export default function GeneratePolicyPage() {
         setPolicyText(generatedContent);
 
         // Run PolicyCop analysis on the clean content
-        // Pass frameworks_selected from METAJSON metadata if available
+        // Pass frameworks_selected from METAJSON metadata and applicability context
         const complianceResult = analyzePolicyCompliance(
           generatedContent,
           policyType as "privacy_policy" | "ai_usage_policy" | "ai_governance_policy",
-          result.metadata?.frameworks_selected
-            ? { frameworks_selected: result.metadata.frameworks_selected }
-            : undefined
+          {
+            frameworks_selected: result.metadata?.frameworks_selected,
+            applicabilityContext,
+          }
         );
         setPolicyCopResult(complianceResult);
         
-        // Get policy-specific thresholds for display
+        // Get policy-specific thresholds for display (dynamic based on applicability)
         const thresholds = getPolicyThresholds(
-          policyType as "privacy_policy" | "ai_usage_policy" | "ai_governance_policy"
+          policyType as "privacy_policy" | "ai_usage_policy" | "ai_governance_policy",
+          applicabilityContext
         );
         setPolicyThresholds(thresholds);
 
@@ -360,10 +375,17 @@ export default function GeneratePolicyPage() {
         </div>
       )}
 
-      {policyCopResult && policyThresholds && (
+      {policyCopResult && policyThresholds && (() => {
+        // Determine if AI Act should be shown (not applicable for privacy policies)
+        const currentPolicyType = mapPolicyIdToType(policyId) as PolicyType;
+        const showAiAct =
+          currentPolicyType !== "privacy_policy" &&
+          policyThresholds.ai_act > 0;
+        
+        return (
         <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-4 space-y-3">
           <h2 className="text-lg font-semibold">PolicyCop Compliance Score</h2>
-          <div className="grid grid-cols-3 gap-4">
+          <div className={`grid ${showAiAct ? 'grid-cols-3' : 'grid-cols-2'} gap-4`}>
             <div>
               <div className="flex items-center justify-between">
                 <div className="text-sm text-neutral-600 dark:text-neutral-400">
@@ -396,38 +418,40 @@ export default function GeneratePolicyPage() {
                 />
               </div>
             </div>
-            <div>
-              <div className="flex items-center justify-between">
-                <div className="text-sm text-neutral-600 dark:text-neutral-400">
-                  AI Act
+            {showAiAct && (
+              <div>
+                <div className="flex items-center justify-between">
+                  <div className="text-sm text-neutral-600 dark:text-neutral-400">
+                    AI Act
+                  </div>
+                  <div className="text-xs text-neutral-500 dark:text-neutral-400">
+                    Target: {Math.round(policyThresholds.ai_act * 100)}%
+                  </div>
                 </div>
-                <div className="text-xs text-neutral-500 dark:text-neutral-400">
-                  Target: {Math.round(policyThresholds.ai_act * 100)}%
+                <div className="text-2xl font-bold">
+                  {Math.round(policyCopResult.ai_act_coverage * 100)}%
+                </div>
+                <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full h-2 mt-1 relative">
+                  <div
+                    className={`h-2 rounded-full ${
+                      policyCopResult.ai_act_coverage >= policyThresholds.ai_act
+                        ? "bg-blue-600"
+                        : policyCopResult.ai_act_coverage >= policyThresholds.ai_act * 0.8
+                        ? "bg-yellow-600"
+                        : "bg-red-600"
+                    }`}
+                    style={{ width: `${policyCopResult.ai_act_coverage * 100}%` }}
+                  />
+                  <div
+                    className="absolute top-0 h-2 border-r-2 border-neutral-400 dark:border-neutral-500"
+                    style={{
+                      left: `${policyThresholds.ai_act * 100}%`,
+                    }}
+                    title={`Threshold: ${Math.round(policyThresholds.ai_act * 100)}%`}
+                  />
                 </div>
               </div>
-              <div className="text-2xl font-bold">
-                {Math.round(policyCopResult.ai_act_coverage * 100)}%
-              </div>
-              <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full h-2 mt-1 relative">
-                <div
-                  className={`h-2 rounded-full ${
-                    policyCopResult.ai_act_coverage >= policyThresholds.ai_act
-                      ? "bg-blue-600"
-                      : policyCopResult.ai_act_coverage >= policyThresholds.ai_act * 0.8
-                      ? "bg-yellow-600"
-                      : "bg-red-600"
-                  }`}
-                  style={{ width: `${policyCopResult.ai_act_coverage * 100}%` }}
-                />
-                <div
-                  className="absolute top-0 h-2 border-r-2 border-neutral-400 dark:border-neutral-500"
-                  style={{
-                    left: `${policyThresholds.ai_act * 100}%`,
-                  }}
-                  title={`Threshold: ${Math.round(policyThresholds.ai_act * 100)}%`}
-                />
-              </div>
-            </div>
+            )}
             <div>
               <div className="flex items-center justify-between">
                 <div className="text-sm text-neutral-600 dark:text-neutral-400">
@@ -463,14 +487,26 @@ export default function GeneratePolicyPage() {
               </div>
             </div>
           </div>
+
+          <MandatoryClausesDisplay
+            result={policyCopResult}
+            policyType={currentPolicyType}
+            className="mt-4"
+          />
+
           {policyCopResult.missing_clauses.length > 0 && (
             <div className="mt-4">
               <p className="text-sm font-medium text-amber-600 dark:text-amber-400 mb-2">
                 Missing required clauses:
               </p>
               {(() => {
+                // Filter out AI_ACT clauses for privacy policies
+                const filteredClauses = showAiAct 
+                  ? policyCopResult.missing_clauses 
+                  : policyCopResult.missing_clauses.filter((c: any) => c.framework !== "AI_ACT");
+                
                 // Group missing clauses by framework
-                const groupedClauses = policyCopResult.missing_clauses.reduce(
+                const groupedClauses = filteredClauses.reduce(
                   (acc: Record<string, any[]>, clause: any) => {
                     if (!acc[clause.framework]) {
                       acc[clause.framework] = [];
@@ -571,7 +607,8 @@ export default function GeneratePolicyPage() {
               }
             }
             
-            if (policyCopResult.ai_act_coverage < policyThresholds.ai_act) {
+            // Only show AI Act suggestions for non-privacy policies
+            if (showAiAct && policyCopResult.ai_act_coverage < policyThresholds.ai_act) {
               const missingAiAct = policyCopResult.missing_clauses.filter(
                 (c: any) => c.framework === "AI_ACT"
               );
@@ -609,7 +646,8 @@ export default function GeneratePolicyPage() {
             );
           })()}
         </div>
-      )}
+        );
+      })()}
 
       {validationWarnings.length > 0 && (
         <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded p-4 space-y-2">

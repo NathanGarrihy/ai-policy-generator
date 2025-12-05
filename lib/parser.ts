@@ -1,4 +1,7 @@
 // lib/parser.ts
+import type { RuleApplicability } from "./types";
+import { GENERATION_CONFIG } from "./constants";
+
 /**
  * Parser for structured policy output from OpenAI
  * Extracts POLICY-MARKDOWN and METAJSON blocks from the response
@@ -90,84 +93,176 @@ export function parsePolicyOutput(rawContent: string): ParsedPolicy {
   let fallbackContent = rawContent.trim();
   let fallbackMetadata: PolicyMetadata | null = null;
   let hasPartialStructure = false;
+  const fallbackErrors: string[] = [];
+  const fallbackWarnings: string[] = [];
 
-  // Try to find JSON block anywhere in the content (might be outside delimiters)
-  // Look for JSON objects that might be METAJSON
-  const jsonPatterns = [
-    // Look for JSON wrapped in code blocks
-    /```json\s*([\s\S]*?)\s*```/i,
-    /```\s*({[\s\S]*?"policy_type"[\s\S]*?})\s*```/i,
-    // Look for standalone JSON objects with policy_type field
-    /\{[\s\S]*?"policy_type"[\s\S]*?\}/i,
-  ];
+  try {
+    // Try to find JSON block anywhere in the content (might be outside delimiters)
+    // Look for JSON objects that might be METAJSON
+    const jsonPatterns = [
+      // Look for JSON wrapped in code blocks
+      /```json\s*([\s\S]*?)\s*```/i,
+      /```\s*({[\s\S]*?"policy_type"[\s\S]*?})\s*```/i,
+      // Look for standalone JSON objects with policy_type field
+      /\{[\s\S]*?"policy_type"[\s\S]*?\}/i,
+    ];
 
-  for (const pattern of jsonPatterns) {
-    const jsonMatch = rawContent.match(pattern);
-    if (jsonMatch) {
+    for (const pattern of jsonPatterns) {
       try {
-        const jsonStr = jsonMatch[1] || jsonMatch[0];
-        const cleanedJson = jsonStr
-          .replace(/^```json\s*/i, "")
-          .replace(/^```\s*/, "")
-          .replace(/\s*```$/, "")
-          .trim();
-        const parsed = JSON.parse(cleanedJson) as PolicyMetadata;
-        // Validate it looks like our metadata structure
-        if (parsed.policy_type || parsed.frameworks_selected || parsed.sections) {
-          fallbackMetadata = parsed;
-          hasPartialStructure = true;
-          break;
+        const jsonMatch = rawContent.match(pattern);
+        if (jsonMatch) {
+          try {
+            const jsonStr = jsonMatch[1] || jsonMatch[0];
+            const cleanedJson = jsonStr
+              .replace(/^```json\s*/i, "")
+              .replace(/^```\s*/, "")
+              .replace(/\s*```$/, "")
+              .trim();
+            
+            if (!cleanedJson || cleanedJson.length === 0) {
+              fallbackWarnings.push("Empty JSON string found in pattern match");
+              continue;
+            }
+            
+            const parsed = JSON.parse(cleanedJson) as PolicyMetadata;
+            
+            // Validate it looks like our metadata structure
+            if (parsed.policy_type || parsed.frameworks_selected || parsed.sections) {
+              fallbackMetadata = parsed;
+              hasPartialStructure = true;
+              break;
+            } else {
+              fallbackWarnings.push("JSON found but doesn't match expected metadata structure");
+            }
+          } catch (parseError: any) {
+            // JSON parse error - log but continue trying other patterns
+            fallbackWarnings.push(`Failed to parse JSON from pattern: ${parseError.message || String(parseError)}`);
+            continue;
+          }
         }
-      } catch (e) {
-        // Continue trying other patterns
+      } catch (patternError: any) {
+        // Pattern matching error - log but continue
+        fallbackWarnings.push(`Error matching JSON pattern: ${patternError.message || String(patternError)}`);
+        continue;
       }
     }
-  }
 
-  // Try to extract policy content by looking for markdown structure
-  // If content starts with markdown headings, it's likely the policy content
-  const lines = fallbackContent.split("\n");
-  const firstHeadingIndex = lines.findIndex((line) => line.match(/^#{1,3}\s+/));
-  
-  if (firstHeadingIndex >= 0) {
-    // Content appears to start with a heading - likely valid policy content
-    // Remove any leading non-markdown content before first heading
-    if (firstHeadingIndex > 0) {
-      // Check if content before first heading looks like instructions or metadata
-      const preHeading = lines.slice(0, firstHeadingIndex).join("\n").toLowerCase();
-      const looksLikeInstructions = 
-        preHeading.includes("generate") ||
-        preHeading.includes("policy") ||
-        preHeading.includes("coverage targets") ||
-        preHeading.includes("company details");
-      
-      if (looksLikeInstructions) {
-        // Skip instruction-like content before first heading
-        fallbackContent = lines.slice(firstHeadingIndex).join("\n").trim();
-        hasPartialStructure = true;
+    // Try to extract policy content by looking for markdown structure
+    // If content starts with markdown headings, it's likely the policy content
+    let lines: string[] = [];
+    try {
+      lines = fallbackContent.split("\n");
+    } catch (splitError: any) {
+      fallbackErrors.push(`Failed to split content into lines: ${splitError.message || String(splitError)}`);
+      // Return minimal fallback result
+      return {
+        content: fallbackContent,
+        metadata: null,
+        hasStructure: false,
+      };
+    }
+    
+    const firstHeadingIndex = lines.findIndex((line) => {
+      try {
+        return line.match(/^#{1,3}\s+/) !== null;
+      } catch {
+        return false;
+      }
+    });
+    
+    if (firstHeadingIndex >= 0) {
+      // Content appears to start with a heading - likely valid policy content
+      // Remove any leading non-markdown content before first heading
+      if (firstHeadingIndex > 0) {
+        try {
+          // Check if content before first heading looks like instructions or metadata
+          const preHeading = lines.slice(0, firstHeadingIndex).join("\n").toLowerCase();
+          const looksLikeInstructions = 
+            preHeading.includes("generate") ||
+            preHeading.includes("policy") ||
+            preHeading.includes("coverage targets") ||
+            preHeading.includes("company details");
+          
+          if (looksLikeInstructions) {
+            // Skip instruction-like content before first heading
+            fallbackContent = lines.slice(firstHeadingIndex).join("\n").trim();
+            hasPartialStructure = true;
+          }
+        } catch (extractionError: any) {
+          fallbackWarnings.push(`Error extracting content before heading: ${extractionError.message || String(extractionError)}`);
+        }
       }
     }
+
+    // Remove any standalone delimiter lines that might be in the content
+    try {
+      fallbackContent = fallbackContent
+        .replace(/-{3,}\s*(BEGIN|END)\s+POLICY-(MARKDOWN|METAJSON)\s*-{3,}/gi, "")
+        .trim();
+    } catch (replaceError: any) {
+      fallbackWarnings.push(`Error removing delimiter lines: ${replaceError.message || String(replaceError)}`);
+    }
+
+    // Try to detect if content has partial structure indicators
+    // Check for markdown headings and framework references
+    let hasMarkdownHeadings = false;
+    let hasFrameworkRefs = false;
+    
+    try {
+      hasMarkdownHeadings = /^#{1,3}\s+/m.test(fallbackContent);
+    } catch (headingTestError: any) {
+      fallbackWarnings.push(`Error testing markdown headings: ${headingTestError.message || String(headingTestError)}`);
+    }
+    
+    try {
+      hasFrameworkRefs = /(?:GDPR\s+Art\.|AI\s+Act\s+Art\.|ISO\s+42001\s+§)/i.test(fallbackContent);
+    } catch (refTestError: any) {
+      fallbackWarnings.push(`Error testing framework references: ${refTestError.message || String(refTestError)}`);
+    }
+    
+    if (hasMarkdownHeadings && hasFrameworkRefs) {
+      hasPartialStructure = true;
+    }
+
+    // Validate final content before returning
+    if (!fallbackContent || fallbackContent.length === 0) {
+      fallbackErrors.push("Fallback parsing resulted in empty content");
+      return {
+        content: rawContent, // Return original as last resort
+        metadata: fallbackMetadata,
+        hasStructure: false,
+      };
+    }
+
+    // Log warnings if any occurred (but don't fail)
+    if (fallbackWarnings.length > 0) {
+      console.warn("[Parser] Fallback parsing warnings:", fallbackWarnings);
+    }
+
+    // Log errors if any occurred
+    if (fallbackErrors.length > 0) {
+      console.error("[Parser] Fallback parsing errors:", fallbackErrors);
+    }
+
+    return {
+      content: fallbackContent,
+      metadata: fallbackMetadata,
+      hasStructure: hasPartialStructure,
+    };
+  } catch (fallbackError: any) {
+    // Catch-all for any unexpected errors in fallback logic
+    console.error("[Parser] Unexpected error in fallback parsing:", {
+      error: fallbackError.message || String(fallbackError),
+      stack: fallbackError.stack,
+    });
+    
+    // Return original content as last resort
+    return {
+      content: rawContent,
+      metadata: null,
+      hasStructure: false,
+    };
   }
-
-  // Remove any standalone delimiter lines that might be in the content
-  fallbackContent = fallbackContent
-    .replace(/-{3,}\s*(BEGIN|END)\s+POLICY-(MARKDOWN|METAJSON)\s*-{3,}/gi, "")
-    .trim();
-
-  // Try to detect if content has partial structure indicators
-  // Check for markdown headings and framework references
-  const hasMarkdownHeadings = /^#{1,3}\s+/m.test(fallbackContent);
-  const hasFrameworkRefs = /(?:GDPR\s+Art\.|AI\s+Act\s+Art\.|ISO\s+42001\s+§)/i.test(fallbackContent);
-  
-  if (hasMarkdownHeadings && hasFrameworkRefs) {
-    hasPartialStructure = true;
-  }
-
-  return {
-    content: fallbackContent,
-    metadata: fallbackMetadata,
-    hasStructure: hasPartialStructure,
-  };
 }
 
 /**
@@ -227,6 +322,14 @@ export type ValidationResult = {
   isValid: boolean;
   errors: string[];
   warnings: string[];
+  /**
+   * Section-level structure information, optionally enriched with
+   * applicability-aware mandatory/optional distinctions.
+   */
+  mandatorySections?: string[];
+  optionalSections?: string[];
+  missingMandatorySections?: string[];
+  missingOptionalSections?: string[];
 };
 
 export type RequiredSections = {
@@ -274,6 +377,34 @@ export const REQUIRED_SECTIONS: RequiredSections = {
     "Mapping Appendix",
   ],
 };
+
+/**
+ * Derive which sections are mandatory vs optional for a given policy type
+ * and applicability context.
+ *
+ * For now, all template sections remain mandatory. This keeps behaviour
+ * backward compatible while giving us a single place to evolve the
+ * logic as questionnaires and rule mappings become richer.
+ */
+export type ContextualSectionRequirements = {
+  mandatory: string[];
+  optional: string[];
+};
+
+export function getRequiredSectionsForContext(
+  policyType: "privacy_policy" | "ai_usage_policy" | "ai_governance_policy",
+  _applicabilityContext?: RuleApplicability
+): ContextualSectionRequirements {
+  const baseRequired = REQUIRED_SECTIONS[policyType] ?? [];
+
+  // MVP: treat all template sections as mandatory. When we have
+  // tighter rule-to-section mappings, this helper will decide which
+  // sections are optional for a given applicability context.
+  return {
+    mandatory: baseRequired,
+    optional: [],
+  };
+}
 
 /**
  * Check if mapping appendix exists in policy content
@@ -377,26 +508,48 @@ export function extractSections(content: string): string[] {
 export function validatePolicyStructure(
   content: string,
   policyType: "privacy_policy" | "ai_usage_policy" | "ai_governance_policy",
-  metadata: PolicyMetadata | null
+  metadata: PolicyMetadata | null,
+  options?: {
+    applicabilityContext?: RuleApplicability;
+  }
 ): ValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const missingMandatorySections: string[] = [];
+  const missingOptionalSections: string[] = [];
+  let mandatorySections: string[] = [];
+  let optionalSections: string[] = [];
 
-  // Get required sections for this policy type
-  const requiredSections = REQUIRED_SECTIONS[policyType];
-  if (!requiredSections) {
+  // Get baseline required sections for this policy type
+  const baseRequiredSections = REQUIRED_SECTIONS[policyType];
+  if (!baseRequiredSections) {
     errors.push(`Unknown policy type: ${policyType}`);
-    return { isValid: false, errors, warnings };
+    return {
+      isValid: false,
+      errors,
+      warnings,
+      mandatorySections: [],
+      optionalSections: [],
+      missingMandatorySections: [],
+      missingOptionalSections: [],
+    };
   }
+
+  // Derive contextual mandatory/optional sections (currently all mandatory)
+  const sectionRequirements = getRequiredSectionsForContext(
+    policyType,
+    options?.applicabilityContext
+  );
+  mandatorySections = sectionRequirements.mandatory;
+  optionalSections = sectionRequirements.optional;
 
   // Extract sections from content
   const foundSections = extractSections(content);
   const foundSectionsLower = foundSections.map((s) => s.toLowerCase());
 
-  // Check for required sections (fuzzy matching)
-  const missingSections: string[] = [];
-  for (const required of requiredSections) {
-    const requiredLower = required.toLowerCase();
+  // Helper to test if a given section label exists (with fuzzy match)
+  const hasSection = (label: string): boolean => {
+    const requiredLower = label.toLowerCase();
 
     // Try exact match first
     let found = foundSectionsLower.some((found) => found === requiredLower);
@@ -411,8 +564,19 @@ export function validatePolicyStructure(
       });
     }
 
-    if (!found) {
-      missingSections.push(required);
+    return found;
+  };
+
+  // Check for mandatory/optional sections (fuzzy matching)
+  for (const required of mandatorySections) {
+    if (!hasSection(required)) {
+      missingMandatorySections.push(required);
+    }
+  }
+
+  for (const optional of optionalSections) {
+    if (!hasSection(optional)) {
+      missingOptionalSections.push(optional);
     }
   }
 
@@ -438,7 +602,9 @@ export function validatePolicyStructure(
         )
       ).length;
 
-      if (matchCount < foundSections.length * 0.5) {
+      // Check if at least 50% of sections match
+      const MATCH_RATE_THRESHOLD = 0.5;
+      if (matchCount < foundSections.length * MATCH_RATE_THRESHOLD) {
         warnings.push(
           "METAJSON sections don't match content sections well (low match rate)"
         );
@@ -456,13 +622,16 @@ export function validatePolicyStructure(
     warnings.push("No METAJSON metadata available for validation");
   }
 
-  // Add missing sections to errors
-  if (missingSections.length > 0) {
-    // Mapping Appendix is critical, others are warnings if content seems reasonable
-    const criticalMissing = missingSections.filter((s) =>
+  // Add missing sections to errors / warnings
+  if (
+    missingMandatorySections.length > 0 ||
+    missingOptionalSections.length > 0
+  ) {
+    // Mapping Appendix is critical, others are downgraded to warnings
+    const criticalMissing = missingMandatorySections.filter((s) =>
       s.toLowerCase().includes("mapping appendix")
     );
-    const nonCriticalMissing = missingSections.filter(
+    const otherMandatoryMissing = missingMandatorySections.filter(
       (s) => !s.toLowerCase().includes("mapping appendix")
     );
 
@@ -470,9 +639,15 @@ export function validatePolicyStructure(
       errors.push(`Missing critical sections: ${criticalMissing.join(", ")}`);
     }
 
-    if (nonCriticalMissing.length > 0) {
+    if (otherMandatoryMissing.length > 0) {
       warnings.push(
-        `Missing or unclear sections: ${nonCriticalMissing.join(", ")}`
+        `Missing mandatory sections: ${otherMandatoryMissing.join(", ")}`
+      );
+    }
+
+    if (missingOptionalSections.length > 0) {
+      warnings.push(
+        `Missing optional sections: ${missingOptionalSections.join(", ")}`
       );
     }
   }
@@ -502,13 +677,14 @@ export function validatePolicyStructure(
       `Policy contains ${placeholderCount} placeholder(s) requiring action: ${Array.from(placeholderTypes).join(", ")}`
     );
 
-    // List specific placeholders (limit to first 5 to avoid overwhelming the UI)
+    // List specific placeholders (limit to avoid overwhelming the UI)
     const placeholderList = placeholders
-      .slice(0, 5)
+      .slice(0, GENERATION_CONFIG.MAX_MISSING_CLAUSES)
       .map((p) => `[${p.type}]: ${p.text}`)
       .join("; ");
     if (placeholderList) {
-      warnings.push(`Placeholders found: ${placeholderList}${placeholders.length > 5 ? "..." : ""}`);
+      const maxPlaceholders = GENERATION_CONFIG.MAX_MISSING_CLAUSES;
+      warnings.push(`Placeholders found: ${placeholderList}${placeholders.length > maxPlaceholders ? "..." : ""}`);
     }
   } else if (metadata && metadata.placeholders_present) {
     warnings.push(
@@ -520,6 +696,10 @@ export function validatePolicyStructure(
     isValid: errors.length === 0,
     errors,
     warnings,
+    mandatorySections,
+    optionalSections,
+    missingMandatorySections,
+    missingOptionalSections,
   };
 }
 

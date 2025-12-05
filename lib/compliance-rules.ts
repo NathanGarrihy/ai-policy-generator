@@ -1,3 +1,5 @@
+import type { ApplicabilityFunction } from "./types";
+
 export type ComplianceRule = {
   framework: "GDPR" | "AI_ACT" | "ISO_42001";
   article_ref: string;
@@ -6,6 +8,8 @@ export type ComplianceRule = {
   keywords: string[]; // Keywords to search for in policy content
   description?: string; // Optional description for better documentation
   section_ids?: string[]; // Optional array of section IDs/titles where this clause is eligible
+  applicability?: ApplicabilityFunction; // Optional function to determine if rule applies to a context
+  hard_mandatory?: boolean; // If true, rule must be present if applicable (overrides coverage thresholds)
 };
 
 export const GDPR_RULES: ComplianceRule[] = [
@@ -14,6 +18,7 @@ export const GDPR_RULES: ComplianceRule[] = [
     article_ref: "Art. 6",
     clause_text: "Lawful basis for processing",
     required: true,
+    hard_mandatory: true,
     keywords: [
       "lawful basis",
       "legal basis",
@@ -91,6 +96,7 @@ export const GDPR_RULES: ComplianceRule[] = [
     article_ref: "Art. 13",
     clause_text: "Information to be provided when collecting data",
     required: true,
+    hard_mandatory: true,
     keywords: [
       "information provided",
       "data collection notice",
@@ -142,6 +148,7 @@ export const GDPR_RULES: ComplianceRule[] = [
     article_ref: "Art. 15",
     clause_text: "Right of access",
     required: true,
+    hard_mandatory: true,
     keywords: [
       "right of access",
       "right to access",
@@ -174,6 +181,7 @@ export const GDPR_RULES: ComplianceRule[] = [
     article_ref: "Art. 16",
     clause_text: "Right to rectification",
     required: true,
+    hard_mandatory: true,
     keywords: [
       "right to rectification",
       "correct data",
@@ -200,6 +208,7 @@ export const GDPR_RULES: ComplianceRule[] = [
     article_ref: "Art. 17",
     clause_text: "Right to erasure ('right to be forgotten')",
     required: true,
+    hard_mandatory: true,
     keywords: [
       "right to erasure",
       "right to be forgotten",
@@ -366,6 +375,34 @@ export const GDPR_RULES: ComplianceRule[] = [
   },
   {
     framework: "GDPR",
+    article_ref: "Art. 28",
+    clause_text: "Processor contracts and obligations",
+    required: true,
+    applicability: (ctx) => ctx.usesThirdPartyProcessors === true,
+    keywords: [
+      "processor",
+      "data processor",
+      "processors",
+      "data processing agreement",
+      "dpa",
+      "processing agreement",
+      "sub-processor",
+      "subprocessor",
+      "controller-processor",
+      "written contract",
+      "written agreement",
+      "processing on behalf of",
+      "instructions of the controller",
+      "processor obligations",
+      "article 28",
+      "art. 28",
+      "art.28",
+    ],
+    description:
+      "Where processing is carried out by a processor, it must be governed by a contract or other legal act that sets out the subject matter, duration, nature, purposes of processing, and processor obligations.",
+  },
+  {
+    framework: "GDPR",
     article_ref: "Art. 30",
     clause_text: "Records of processing activities",
     required: true,
@@ -492,6 +529,7 @@ export const GDPR_RULES: ComplianceRule[] = [
     article_ref: "Art. 44",
     clause_text: "General principle for transfers",
     required: true,
+    applicability: (ctx) => ctx.hasInternationalTransfers === true,
     keywords: [
       "data transfer",
       "transfer of personal data",
@@ -509,6 +547,7 @@ export const GDPR_RULES: ComplianceRule[] = [
     article_ref: "Art. 45",
     clause_text: "Transfers on the basis of an adequacy decision",
     required: false,
+    applicability: (ctx) => ctx.hasInternationalTransfers === true,
     keywords: [
       "adequacy decision",
       "adequate level of protection",
@@ -523,6 +562,7 @@ export const GDPR_RULES: ComplianceRule[] = [
     article_ref: "Art. 46",
     clause_text: "Transfers subject to appropriate safeguards",
     required: false,
+    applicability: (ctx) => ctx.hasInternationalTransfers === true,
     keywords: [
       "appropriate safeguards",
       "standard contractual clauses",
@@ -540,6 +580,7 @@ export const GDPR_RULES: ComplianceRule[] = [
     article_ref: "Art. 47",
     clause_text: "Binding corporate rules",
     required: false,
+    applicability: (ctx) => ctx.hasInternationalTransfers === true,
     keywords: [
       "binding corporate rules",
       "bcr",
@@ -555,6 +596,7 @@ export const GDPR_RULES: ComplianceRule[] = [
     article_ref: "Art. 48",
     clause_text: "Transfers or disclosures not authorized by Union law",
     required: true,
+    applicability: (ctx) => ctx.hasInternationalTransfers === true,
     keywords: [
       "unauthorized transfer",
       "court order",
@@ -570,6 +612,7 @@ export const GDPR_RULES: ComplianceRule[] = [
     article_ref: "Art. 49",
     clause_text: "Derogations for specific situations",
     required: false,
+    applicability: (ctx) => ctx.hasInternationalTransfers === true,
     keywords: [
       "derogations",
       "explicit consent",
@@ -685,6 +728,8 @@ export const AI_ACT_RULES: ComplianceRule[] = [
     article_ref: "Art. 6",
     clause_text: "Classification rules for high-risk AI systems",
     required: true,
+    hard_mandatory: true,
+    applicability: (ctx) => ctx.deploysHighRiskAI === true || ctx.offersAIAsProductInEU === true,
     keywords: [
       // Risk classification
       "high-risk",
@@ -767,6 +812,8 @@ export const AI_ACT_RULES: ComplianceRule[] = [
     article_ref: "Art. 9",
     clause_text: "Risk management system",
     required: true,
+    hard_mandatory: true,
+    applicability: (ctx) => ctx.deploysHighRiskAI === true,
     keywords: [
       // Risk management core
       "risk management",
@@ -819,6 +866,8 @@ export const AI_ACT_RULES: ComplianceRule[] = [
     article_ref: "Art. 10",
     clause_text: "Data and data governance",
     required: true,
+    hard_mandatory: true,
+    applicability: (ctx) => ctx.usesAIForPersonalData === true || ctx.deploysHighRiskAI === true,
     keywords: [
       // Data governance
       "data governance",
@@ -871,6 +920,8 @@ export const AI_ACT_RULES: ComplianceRule[] = [
     article_ref: "Art. 11",
     clause_text: "Technical documentation",
     required: true,
+    hard_mandatory: true,
+    applicability: (ctx) => ctx.deploysHighRiskAI === true,
     keywords: [
       // Documentation types
       "technical documentation",
@@ -965,6 +1016,7 @@ export const AI_ACT_RULES: ComplianceRule[] = [
     article_ref: "Art. 13",
     clause_text: "Transparency obligations",
     required: true,
+    applicability: (ctx) => ctx.usesAIForPersonalData === true,
     keywords: [
       // Transparency core
       "transparency",
@@ -1405,6 +1457,7 @@ export const AI_ACT_RULES: ComplianceRule[] = [
     article_ref: "Art. 52",
     clause_text: "Transparency obligations for certain AI systems",
     required: true,
+    applicability: (ctx) => ctx.usesAIForPersonalData === true,
     keywords: [
       // Transparency
       "transparency",

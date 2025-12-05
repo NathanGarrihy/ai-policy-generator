@@ -42,7 +42,10 @@
 
 - Section-by-section “compliance coverage” bar (e.g. GDPR 80%, AI Act 70%).
 - Flags missing clauses (“No risk classification procedure found”).
-- Works via static rule list (no external monitoring yet).
+- Questionnaire-driven applicability: evaluates only rules that apply to the company's specific situation.
+- Distinguishes mandatory clauses (must be present) from optional clauses.
+- Dynamic thresholds: AI Act threshold = 0 if no applicable AI Act rules.
+- Works via static rule list with applicability functions (no external monitoring yet).
 
 **Evidence Pack Export (MVP differentiator)**
 
@@ -129,7 +132,7 @@
 | Module         | Acceptance Criteria                                                                          |
 | -------------- | -------------------------------------------------------------------------------------------- |
 | Generator      | Generates 3 policies ≤ 25s; includes mapping notes; passes internal PolicyCop coverage ≥70%. |
-| PolicyCop Lite | Detects ≥10 key AI Act/ISO clauses; provides section-level score.                            |
+| PolicyCop Lite | Detects ≥10 key AI Act/ISO clauses; provides section-level score; questionnaire-driven applicability; distinguishes mandatory vs optional clauses. |
 | Export         | PDF/DOCX identical structure; includes mapping appendix; ≥98% export success.                |
 | Versioning     | Diff engine shows changes + coverage delta.                                                  |
 | UI             | “Buyer-ready” look — professional formatting, not GPT text wall.                             |

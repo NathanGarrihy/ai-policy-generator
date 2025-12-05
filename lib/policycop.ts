@@ -11,8 +11,134 @@ import {
   detectPlaceholders,
   parsePolicyOutput,
 } from "./parser";
+import type {
+  RuleApplicability,
+  PrivacyQuestionnaire,
+  AIUsageQuestionnaire,
+  AIGovernanceQuestionnaire,
+} from "./types";
+import {
+  WINDOW_SIZES,
+  CO_OCCURRENCE_THRESHOLDS,
+  KEYWORD_THRESHOLDS,
+  CONTENT_THRESHOLDS,
+  FRAMEWORK_REFERENCES,
+  QUALITY_THRESHOLDS,
+  REGEX_CACHE,
+} from "./constants";
 
 export type PolicyType = "privacy_policy" | "ai_usage_policy" | "ai_governance_policy";
+
+/**
+ * Build applicability context from questionnaire data
+ * Derives boolean flags that determine which compliance rules apply to this company
+ */
+export function buildApplicabilityContext(
+  questionnaireData: Record<string, any>,
+  policyType: PolicyType
+): RuleApplicability {
+  const context: RuleApplicability = {};
+  if (policyType === "privacy_policy") {
+    const privacyData = questionnaireData as Partial<PrivacyQuestionnaire>;
+
+    /**
+     * International transfers & processors
+     *
+     * We deliberately avoid assuming that any EU/UK jurisdiction implies
+     * international transfers. Instead, we only infer transfers where there
+     * is a clear signal of non‑EU/UK frameworks in scope alongside third
+     * parties. This keeps us conservative and avoids over‑scoping Art. 44–49.
+     */
+    const usesThirdParties = privacyData.third_parties === "Yes";
+    const jurisdictions = privacyData.jurisdictions ?? [];
+
+    const targetsNonEuOrUkFrameworks = jurisdictions.some((j) =>
+      // Current questionnaire uses framework labels rather than true
+      // jurisdictions. Treat clearly non‑EU/UK frameworks as a proxy for
+      // cross‑border exposure instead of assuming all GDPR/UK GDPR implies it.
+      j.includes("CCPA") || j.includes("PIPEDA")
+    );
+
+    context.hasInternationalTransfers =
+      usesThirdParties && targetsNonEuOrUkFrameworks;
+
+    // Third‑party processors are inferred directly from the checkbox
+    context.usesThirdPartyProcessors = privacyData.third_parties === "Yes";
+
+    /**
+     * Special‑category / high‑risk processing
+     *
+     * The current MVP questionnaire does not explicitly ask about GDPR
+     * special‑category data (health, religion, biometrics, etc.). Earlier
+     * heuristics treated “Payment info” as special category, which is not
+     * legally accurate. Until we add dedicated fields, we keep this flag
+     * conservative and do not infer special‑category processing at all.
+     */
+    context.processesSpecialCategoryData = false;
+
+    // Treat truly indefinite retention as a generic high‑risk signal.
+    context.hasHighRiskProcessing =
+      privacyData.data_retention === "Indefinitely";
+  } else if (policyType === "ai_usage_policy") {
+    const aiUsageData = questionnaireData as Partial<AIUsageQuestionnaire>;
+
+    // Check if AI is used with personal data
+    const dataSent = aiUsageData.data_sent_to_models?.toLowerCase() || "";
+    context.usesAIForPersonalData =
+      dataSent.includes("pii") ||
+      dataSent.includes("personal data") ||
+      dataSent.includes("personal information") ||
+      dataSent.includes("email") ||
+      dataSent.includes("name") ||
+      dataSent.includes("user data");
+    // Check if high-risk AI is deployed
+    context.deploysHighRiskAI = aiUsageData.ai_risk_rating === "high";
+    /**
+     * Automated decision‑making
+     *
+     * Do NOT infer this solely from “low oversight” or “high risk”, which
+     * would massively over‑scope AI Act obligations. With the current
+     * questionnaire shape we can only make a conservative guess. For now,
+     * we only flag automated decision‑making when the risk is explicitly
+     * marked high AND human oversight is low.
+     */
+    context.usesAutomatedDecisionMaking =
+      aiUsageData.ai_risk_rating === "high" &&
+      aiUsageData.human_oversight_level === "low";
+  } else if (policyType === "ai_governance_policy") {
+    const aiGovData = questionnaireData as Partial<AIGovernanceQuestionnaire>;
+
+    /**
+     * High‑risk AI for governance
+     *
+     * Earlier versions assumed that the mere existence of an AI governance
+     * policy implied deployment of high‑risk AI systems. That is too broad:
+     * many teams introduce governance before any high‑risk deployment.
+     *
+     * Until the governance questionnaire explicitly captures high‑risk
+     * system inventory or classification, we do NOT infer high‑risk usage
+     * from this form alone.
+     */
+    context.deploysHighRiskAI = false;
+
+    // Check if offering AI as a product in the EU (very light‑weight heuristic)
+    context.offersAIAsProductInEU =
+      aiGovData.ai_governance_owner_role?.toLowerCase().includes("product") === true ||
+      aiGovData.ai_governance_owner_role?.toLowerCase().includes("cto") === true;
+  }
+
+  // Default all undefined flags to false for clarity
+  return {
+    usesAIForPersonalData: context.usesAIForPersonalData ?? false,
+    deploysHighRiskAI: context.deploysHighRiskAI ?? false,
+    offersAIAsProductInEU: context.offersAIAsProductInEU ?? false,
+    usesAutomatedDecisionMaking: context.usesAutomatedDecisionMaking ?? false,
+    processesSpecialCategoryData: context.processesSpecialCategoryData ?? false,
+    hasInternationalTransfers: context.hasInternationalTransfers ?? false,
+    usesThirdPartyProcessors: context.usesThirdPartyProcessors ?? false,
+    hasHighRiskProcessing: context.hasHighRiskProcessing ?? false,
+  };
+}
 
 /**
  * Maps policy types to their allowed ISO 42001 sections
@@ -57,6 +183,16 @@ export type PolicyCopResult = {
     clause_text: string;
     required: boolean;
   }>;
+  missing_mandatory_clauses?: Array<{
+    framework: string;
+    article_ref: string;
+    clause_text: string;
+  }>;
+  missing_required_clauses?: Array<{
+    framework: string;
+    article_ref: string;
+    clause_text: string;
+  }>;
   section_scores: Array<{
     section_name: string;
     gdpr_coverage: number;
@@ -80,37 +216,106 @@ export type PolicyCoverageThresholds = {
 /**
  * Get policy-type-specific coverage thresholds
  * Different policy types have different expected coverage levels
+ * If applicabilityContext is provided, thresholds are calculated dynamically based on applicable rules
  */
 export function getPolicyThresholds(
-  policyType: PolicyType
+  policyType: PolicyType,
+  applicabilityContext?: RuleApplicability
 ): PolicyCoverageThresholds {
+  // If no applicability context provided, use static thresholds (backward compatible)
+  if (!applicabilityContext) {
+    switch (policyType) {
+      case "privacy_policy":
+        return {
+          gdpr: 0.7, // 70% - Privacy policies should have high GDPR coverage
+          ai_act: 0, // Privacy policies don't support AI Act per POLICY_FRAMEWORK_SCOPE
+          iso_42001: 0.6, // 60% - Privacy policies should reference ISO 42001 for data handling
+        };
+      case "ai_usage_policy":
+        return {
+          gdpr: 0.3, // 30% - AI Usage policies focus on AI Act, GDPR is secondary
+          ai_act: 0.7, // 70% - AI Usage policies should have high AI Act coverage
+          iso_42001: 0.7, // 70% - AI Usage policies should have high ISO 42001 coverage
+        };
+      case "ai_governance_policy":
+        return {
+          gdpr: 0.2, // 20% - AI Governance policies focus on governance, GDPR is minimal
+          ai_act: 0.7, // 70% - AI Governance policies should have high AI Act coverage
+          iso_42001: 0.7, // 70% - AI Governance policies should have high ISO 42001 coverage
+        };
+      default:
+        // Default thresholds (conservative)
+        return {
+          gdpr: 0.5,
+          ai_act: 0.5,
+          iso_42001: 0.5,
+        };
+    }
+  }
+
+  // Dynamic threshold calculation based on applicable rules
+  // Filter rules by applicability context (with caching)
+  const thresholdCacheKey = generateRulesCacheKey(policyType, applicabilityContext);
+  const applicableGdprRules = filterRulesByApplicability(GDPR_RULES, applicabilityContext, `${thresholdCacheKey}:GDPR:threshold`);
+  const applicableAiActRules = filterRulesByApplicability(AI_ACT_RULES, applicabilityContext, `${thresholdCacheKey}:AI_ACT:threshold`);
+  const applicableIsoRules = filterRulesByApplicability(ISO_42001_RULES, applicabilityContext, `${thresholdCacheKey}:ISO_42001:threshold`);
+
+  // Get base thresholds for the policy type (use switch statement directly to avoid recursion)
+  let baseThresholds: PolicyCoverageThresholds;
   switch (policyType) {
     case "privacy_policy":
-      return {
-        gdpr: 0.7, // 70% - Privacy policies should have high GDPR coverage
-        ai_act: 0, // Privacy policies don't support AI Act per POLICY_FRAMEWORK_SCOPE
-        iso_42001: 0.6, // 60% - Privacy policies should reference ISO 42001 for data handling
+      baseThresholds = {
+        gdpr: 0.7,
+        ai_act: 0,
+        iso_42001: 0.6,
       };
+      break;
     case "ai_usage_policy":
-      return {
-        gdpr: 0.3, // 30% - AI Usage policies focus on AI Act, GDPR is secondary
-        ai_act: 0.7, // 70% - AI Usage policies should have high AI Act coverage
-        iso_42001: 0.7, // 70% - AI Usage policies should have high ISO 42001 coverage
+      baseThresholds = {
+        gdpr: 0.3,
+        ai_act: 0.7,
+        iso_42001: 0.7,
       };
+      break;
     case "ai_governance_policy":
-      return {
-        gdpr: 0.2, // 20% - AI Governance policies focus on governance, GDPR is minimal
-        ai_act: 0.7, // 70% - AI Governance policies should have high AI Act coverage
-        iso_42001: 0.7, // 70% - AI Governance policies should have high ISO 42001 coverage
+      baseThresholds = {
+        gdpr: 0.2,
+        ai_act: 0.7,
+        iso_42001: 0.7,
       };
+      break;
     default:
-      // Default thresholds (conservative)
-      return {
+      baseThresholds = {
         gdpr: 0.5,
         ai_act: 0.5,
         iso_42001: 0.5,
       };
   }
+
+  // Calculate dynamic thresholds
+  let gdprThreshold = baseThresholds.gdpr;
+  let aiActThreshold = baseThresholds.ai_act;
+  let isoThreshold = baseThresholds.iso_42001;
+
+  // If no AI Act rules are applicable, set AI Act threshold to 0
+  if (applicableAiActRules.length === 0) {
+    aiActThreshold = 0;
+  } else {
+    // If AI Act rules are applicable, use base threshold (already set for AI Usage/Governance)
+    // For privacy policies, if AI Act rules become applicable, use a lower threshold
+    if (policyType === "privacy_policy" && applicableAiActRules.length > 0) {
+      aiActThreshold = 0.4; // Lower threshold for privacy policies with AI Act rules
+    }
+  }
+
+  // GDPR and ISO thresholds remain the same (they're always applicable)
+  // But we could adjust them if needed based on applicable rule count
+
+  return {
+    gdpr: gdprThreshold,
+    ai_act: aiActThreshold,
+    iso_42001: isoThreshold,
+  };
 }
 
 /**
@@ -254,6 +459,163 @@ function getFrameworkScopeForPolicyType(
 }
 
 /**
+ * LRU Cache for filtered compliance rules
+ * Caches rules filtered by policy type and applicability context
+ */
+class RulesCache {
+  private cache: Map<string, ComplianceRule[]> = new Map();
+  private accessOrder: string[] = [];
+  private readonly maxSize: number;
+
+  constructor(maxSize: number = RULES_CACHE.MAX_SIZE) {
+    this.maxSize = maxSize;
+  }
+
+  get(key: string): ComplianceRule[] | undefined {
+    if (this.cache.has(key)) {
+      // Move to end (most recently used)
+      const index = this.accessOrder.indexOf(key);
+      if (index > -1) {
+        this.accessOrder.splice(index, 1);
+      }
+      this.accessOrder.push(key);
+      return this.cache.get(key);
+    }
+    return undefined;
+  }
+
+  set(key: string, rules: ComplianceRule[]): void {
+    // Evict oldest if cache is full
+    if (this.cache.size >= this.maxSize && !this.cache.has(key)) {
+      const oldestKey = this.accessOrder.shift();
+      if (oldestKey) {
+        this.cache.delete(oldestKey);
+      }
+    }
+    
+    // Add to cache
+    this.cache.set(key, rules);
+    const index = this.accessOrder.indexOf(key);
+    if (index > -1) {
+      this.accessOrder.splice(index, 1);
+    }
+    this.accessOrder.push(key);
+  }
+
+  clear(): void {
+    this.cache.clear();
+    this.accessOrder = [];
+  }
+
+  size(): number {
+    return this.cache.size;
+  }
+}
+
+// Global rules cache instance
+const rulesCache = new RulesCache();
+
+/**
+ * Generate cache key from policy type and applicability context
+ */
+function generateRulesCacheKey(
+  policyType: PolicyType | undefined,
+  applicabilityContext: RuleApplicability | undefined,
+  frameworksSelected?: string[]
+): string {
+  const parts: string[] = [];
+  
+  if (policyType) {
+    parts.push(`type:${policyType}`);
+  }
+  
+  if (frameworksSelected && frameworksSelected.length > 0) {
+    parts.push(`frameworks:${frameworksSelected.sort().join(",")}`);
+  }
+  
+  if (applicabilityContext) {
+    // Create hash-like key from applicability context
+    const contextParts: string[] = [];
+    if (applicabilityContext.usesAIForPersonalData) contextParts.push("ai-personal");
+    if (applicabilityContext.deploysHighRiskAI) contextParts.push("high-risk");
+    if (applicabilityContext.offersAIAsProductInEU) contextParts.push("ai-product");
+    if (applicabilityContext.usesAutomatedDecisionMaking) contextParts.push("automated");
+    if (applicabilityContext.processesSpecialCategoryData) contextParts.push("special-category");
+    if (applicabilityContext.hasInternationalTransfers) contextParts.push("transfers");
+    if (applicabilityContext.usesThirdPartyProcessors) contextParts.push("third-party");
+    if (applicabilityContext.hasHighRiskProcessing) contextParts.push("high-risk-processing");
+    
+    if (contextParts.length > 0) {
+      parts.push(`context:${contextParts.sort().join(",")}`);
+    }
+  }
+  
+  return parts.join("|");
+}
+
+/**
+ * Filter rules by applicability context
+ * Rules without applicability function are always included (backward compatible)
+ * Rules with applicability function are included only if function returns true
+ * Uses caching for performance optimization
+ */
+function filterRulesByApplicability(
+  rules: ComplianceRule[],
+  applicabilityContext: RuleApplicability,
+  cacheKey?: string
+): ComplianceRule[] {
+  // Check cache if key provided
+  if (cacheKey) {
+    const cached = rulesCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+  }
+  
+  const filtered = rules.filter((rule) => {
+    // If rule has no applicability function, it's always applicable (backward compatible)
+    if (!rule.applicability) {
+      return true;
+    }
+    // Otherwise, check if applicability function returns true for this context
+    return rule.applicability(applicabilityContext);
+  });
+  
+  // Cache result if key provided
+  if (cacheKey) {
+    rulesCache.set(cacheKey, filtered);
+  }
+  
+  return filtered;
+}
+
+/**
+ * Categorize rules by mandatory status
+ * Returns three groups: hard mandatory, soft required, and optional
+ */
+function categorizeRules(rules: ComplianceRule[]): {
+  hardMandatory: ComplianceRule[];
+  softRequired: ComplianceRule[];
+  optional: ComplianceRule[];
+} {
+  const hardMandatory: ComplianceRule[] = [];
+  const softRequired: ComplianceRule[] = [];
+  const optional: ComplianceRule[] = [];
+
+  for (const rule of rules) {
+    if (rule.hard_mandatory === true) {
+      hardMandatory.push(rule);
+    } else if (rule.required === true) {
+      softRequired.push(rule);
+    } else {
+      optional.push(rule);
+    }
+  }
+
+  return { hardMandatory, softRequired, optional };
+}
+
+/**
  * Filters rules based on policy type and framework scope
  * Returns filtered rules array based on POLICY_FRAMEWORK_SCOPE
  * For ISO_42001 rules, also filters by allowed sections from POLICY_ISO_SECTIONS
@@ -347,7 +709,8 @@ function analyzeSectionCompliance(
   sectionName?: string,
   policyType?: PolicyType,
   allNormalizedSectionNames?: string[],
-  frameworksSelected?: string[]
+  frameworksSelected?: string[],
+  applicabilityContext?: RuleApplicability
 ): {
   gdpr_coverage: number;
   ai_act_coverage: number;
@@ -363,16 +726,33 @@ function analyzeSectionCompliance(
   const normalizedSectionName = sectionName ? normalizeSectionName(sectionName) : "";
   const normalizedSectionNames = allNormalizedSectionNames || [];
 
-  // Filter rules by policy type and frameworks_selected override
+  // Generate cache key for this combination
+  const cacheKey = generateRulesCacheKey(policyType, applicabilityContext, frameworksSelected);
+  const gdprCacheKey = `${cacheKey}:GDPR`;
+  const aiActCacheKey = `${cacheKey}:AI_ACT`;
+  const isoCacheKey = `${cacheKey}:ISO_42001`;
+
+  // Filter rules by applicability FIRST (if context provided)
+  let gdprRulesToFilter = GDPR_RULES;
+  let aiActRulesToFilter = AI_ACT_RULES;
+  let isoRulesToFilter = ISO_42001_RULES;
+
+  if (applicabilityContext) {
+    gdprRulesToFilter = filterRulesByApplicability(GDPR_RULES, applicabilityContext, gdprCacheKey);
+    aiActRulesToFilter = filterRulesByApplicability(AI_ACT_RULES, applicabilityContext, aiActCacheKey);
+    isoRulesToFilter = filterRulesByApplicability(ISO_42001_RULES, applicabilityContext, isoCacheKey);
+  }
+
+  // Then filter by policy type and frameworks_selected override
   const filteredGdprRules = policyType || frameworksSelected
-    ? filterRulesByPolicyType(GDPR_RULES, policyType, frameworksSelected)
-    : GDPR_RULES;
+    ? filterRulesByPolicyType(gdprRulesToFilter, policyType, frameworksSelected, `${gdprCacheKey}:filtered`)
+    : gdprRulesToFilter;
   const filteredAiActRules = policyType || frameworksSelected
-    ? filterRulesByPolicyType(AI_ACT_RULES, policyType, frameworksSelected)
-    : AI_ACT_RULES;
+    ? filterRulesByPolicyType(aiActRulesToFilter, policyType, frameworksSelected, `${aiActCacheKey}:filtered`)
+    : aiActRulesToFilter;
   const filteredIsoRules = policyType || frameworksSelected
-    ? filterRulesByPolicyType(ISO_42001_RULES, policyType, frameworksSelected)
-    : ISO_42001_RULES;
+    ? filterRulesByPolicyType(isoRulesToFilter, policyType, frameworksSelected, `${isoCacheKey}:filtered`)
+    : isoRulesToFilter;
 
   // Prioritize rules based on section context (if section name provided)
   const prioritizedGdprRules = sectionName
@@ -404,10 +784,17 @@ function analyzeSectionCompliance(
   const isoCoverage = calculateCoverage(isoMatches, filteredIsoRules);
 
   // Find missing clauses (required ones that weren't found)
-  // Filter ALL_RULES by policy type and frameworks_selected override
+  // Filter ALL_RULES by applicability first (if context provided)
+  let allRulesToFilter = ALL_RULES;
+  const allRulesCacheKey = `${cacheKey}:ALL`;
+  if (applicabilityContext) {
+    allRulesToFilter = filterRulesByApplicability(ALL_RULES, applicabilityContext, allRulesCacheKey);
+  }
+
+  // Then filter by policy type and frameworks_selected override
   const filteredAllRules = policyType || frameworksSelected
-    ? filterRulesByPolicyType(ALL_RULES, policyType, frameworksSelected)
-    : ALL_RULES;
+    ? filterRulesByPolicyType(allRulesToFilter, policyType, frameworksSelected, `${allRulesCacheKey}:filtered`)
+    : allRulesToFilter;
 
   const missingClauses = filteredAllRules.filter((rule) => {
     if (!rule.required) return false;
@@ -439,23 +826,141 @@ function analyzeSectionCompliance(
 }
 
 /**
+ * Content analysis accumulator
+ * Processes content once and stores all keyword/article positions for reuse
+ */
+type ContentAnalysisAccumulator = {
+  normalizedContent: string;
+  windows: string[];
+  allKeywordPositions: Map<string, Array<{ keyword: string; position: number; windowIndex: number }>>;
+  allArticlePositions: Map<string, Array<{ position: number; windowIndex: number }>>;
+};
+
+/**
+ * Build content analysis accumulator in single pass
+ * Processes content once and stores positions for all keywords and article refs
+ */
+function buildContentAccumulator(
+  content: string,
+  allRules: ComplianceRule[]
+): ContentAnalysisAccumulator {
+  const normalizedContent = content.toLowerCase().replace(/\s+/g, " ");
+  const windows = splitIntoContextWindows(normalizedContent, WINDOW_SIZES.STANDARD);
+  
+  // Collect all unique keywords and article refs from all rules
+  const allKeywords = new Set<string>();
+  const allArticleRefs = new Map<string, { ref: string; framework: "GDPR" | "AI_ACT" | "ISO_42001" }>();
+  
+  for (const rule of allRules) {
+    // Add all keywords from this rule
+    for (const keyword of rule.keywords) {
+      const expanded = expandKeyword(keyword);
+      expanded.forEach(kw => allKeywords.add(kw));
+    }
+    
+    // Add article ref
+    const key = `${rule.framework}:${rule.article_ref}`;
+    if (!allArticleRefs.has(key)) {
+      allArticleRefs.set(key, { ref: rule.article_ref, framework: rule.framework });
+    }
+  }
+  
+  // Find positions for all keywords in single pass
+  const allKeywordPositions = new Map<string, Array<{ keyword: string; position: number; windowIndex: number }>>();
+  for (const keyword of allKeywords) {
+    const positions = findKeywordPositions([keyword], normalizedContent, windows);
+    if (positions.length > 0) {
+      allKeywordPositions.set(keyword, positions);
+    }
+  }
+  
+  // Find positions for all article refs in single pass
+  const allArticlePositions = new Map<string, Array<{ position: number; windowIndex: number }>>();
+  for (const [key, { ref, framework }] of allArticleRefs.entries()) {
+    const positions = findArticlePositions(ref, framework, normalizedContent, windows);
+    if (positions.length > 0) {
+      allArticlePositions.set(key, positions);
+    }
+  }
+  
+  return {
+    normalizedContent,
+    windows,
+    allKeywordPositions,
+    allArticlePositions,
+  };
+}
+
+/**
+ * Check rule using pre-built accumulator (optimized single-pass)
+ */
+function checkRuleWithAccumulator(
+  rule: ComplianceRule,
+  accumulator: ContentAnalysisAccumulator,
+  sectionName?: string
+): boolean {
+  // Collect keyword positions for this rule from accumulator
+  const keywordPositions: Array<{ keyword: string; position: number; windowIndex: number }> = [];
+  for (const keyword of rule.keywords) {
+    const expanded = expandKeyword(keyword);
+    for (const expandedKeyword of expanded) {
+      const positions = accumulator.allKeywordPositions.get(expandedKeyword);
+      if (positions) {
+        keywordPositions.push(...positions);
+      }
+    }
+  }
+  
+  // Get article positions from accumulator
+  const articleKey = `${rule.framework}:${rule.article_ref}`;
+  const articlePositions = accumulator.allArticlePositions.get(articleKey) || [];
+  
+  // Use existing checkProximity and checkKeywordCoOccurrence logic
+  const proximityResult = checkProximity(
+    keywordPositions,
+    articlePositions,
+    WINDOW_SIZES.MAX_DISTANCE
+  );
+  
+  const coOccurrenceResult = checkKeywordCoOccurrence(
+    rule.keywords,
+    accumulator.normalizedContent,
+    accumulator.windows
+  );
+  
+  // Build match results using extracted functions
+  const proximityMatch = checkProximityMatch(
+    keywordPositions,
+    articlePositions,
+    proximityResult
+  );
+  
+  const keywordMatch = checkKeywordCoOccurrenceMatch(rule, coOccurrenceResult);
+  
+  return combineMatchResults(proximityMatch, keywordMatch, articlePositions);
+}
+
+/**
  * Analyzes policy content against compliance rules
  * Now includes section-level scoring
+ * Uses single-pass content analysis for performance optimization
  * 
  * @param policyContent - The policy content to analyze
  * @param policyType - Optional policy type to filter rules by framework scope
  *                     If not provided, checks all frameworks (legacy behavior)
- * @param options - Optional metadata/options object containing frameworks_selected override
+ * @param options - Optional metadata/options object containing frameworks_selected override and applicabilityContext
  */
 export function analyzePolicyCompliance(
   policyContent: string,
   policyType?: PolicyType,
   options?: {
     frameworks_selected?: string[];
+    applicabilityContext?: RuleApplicability;
   }
 ): PolicyCopResult {
   const contentLower = policyContent.toLowerCase();
   const frameworksSelected = options?.frameworks_selected;
+  const applicabilityContext = options?.applicabilityContext;
 
   // TODO: Deprecate behavior when policyType is missing
   // In future versions, policyType should be required
@@ -469,45 +974,72 @@ export function analyzePolicyCompliance(
   // Build list of normalized section names for cross-section matching
   const normalizedSectionNames = sections.map(s => s.normalizedName);
 
+  // Generate cache key for this combination
+  const cacheKey = generateRulesCacheKey(policyType, applicabilityContext, frameworksSelected);
+  const gdprCacheKey = `${cacheKey}:GDPR`;
+  const aiActCacheKey = `${cacheKey}:AI_ACT`;
+  const isoCacheKey = `${cacheKey}:ISO_42001`;
+
   // Analyze each section with context-aware matching
   const sectionScores = sections.map((section) => ({
     section_name: section.name,
-    ...analyzeSectionCompliance(section.content, section.name, policyType, normalizedSectionNames, frameworksSelected),
+    ...analyzeSectionCompliance(section.content, section.name, policyType, normalizedSectionNames, frameworksSelected, applicabilityContext),
   }));
 
-  // Filter rules by policy type and frameworks_selected override
-  const filteredGdprRules = policyType || frameworksSelected
-    ? filterRulesByPolicyType(GDPR_RULES, policyType, frameworksSelected)
-    : GDPR_RULES;
-  const filteredAiActRules = policyType || frameworksSelected
-    ? filterRulesByPolicyType(AI_ACT_RULES, policyType, frameworksSelected)
-    : AI_ACT_RULES;
-  const filteredIsoRules = policyType || frameworksSelected
-    ? filterRulesByPolicyType(ISO_42001_RULES, policyType, frameworksSelected)
-    : ISO_42001_RULES;
+  // Filter rules by applicability FIRST (if context provided)
+  let gdprRulesToFilter = GDPR_RULES;
+  let aiActRulesToFilter = AI_ACT_RULES;
+  let isoRulesToFilter = ISO_42001_RULES;
 
-  // Calculate overall scores using context-aware matching (stricter validation)
-  // Use checkRuleWithContext instead of simple checkRule for better accuracy
+  if (applicabilityContext) {
+    gdprRulesToFilter = filterRulesByApplicability(GDPR_RULES, applicabilityContext, gdprCacheKey);
+    aiActRulesToFilter = filterRulesByApplicability(AI_ACT_RULES, applicabilityContext, aiActCacheKey);
+    isoRulesToFilter = filterRulesByApplicability(ISO_42001_RULES, applicabilityContext, isoCacheKey);
+  }
+
+  // Then filter by policy type and frameworks_selected override
+  const filteredGdprRules = policyType || frameworksSelected
+    ? filterRulesByPolicyType(gdprRulesToFilter, policyType, frameworksSelected, `${gdprCacheKey}:filtered`)
+    : gdprRulesToFilter;
+  const filteredAiActRules = policyType || frameworksSelected
+    ? filterRulesByPolicyType(aiActRulesToFilter, policyType, frameworksSelected, `${aiActCacheKey}:filtered`)
+    : aiActRulesToFilter;
+  const filteredIsoRules = policyType || frameworksSelected
+    ? filterRulesByPolicyType(isoRulesToFilter, policyType, frameworksSelected, `${isoCacheKey}:filtered`)
+    : isoRulesToFilter;
+
+  // Build content accumulator once for all rules (single-pass optimization)
+  const allFilteredRules = [...filteredGdprRules, ...filteredAiActRules, ...filteredIsoRules];
+  const accumulator = buildContentAccumulator(contentLower, allFilteredRules);
+
+  // Calculate overall scores using accumulator (single-pass)
   const gdprMatches = filteredGdprRules.map((rule) =>
-    checkRuleWithContext(rule, contentLower).matched
+    checkRuleWithAccumulator(rule, accumulator)
   );
   const gdprCoverage = calculateCoverage(gdprMatches, filteredGdprRules);
 
   const aiActMatches = filteredAiActRules.map((rule) =>
-    checkRuleWithContext(rule, contentLower).matched
+    checkRuleWithAccumulator(rule, accumulator)
   );
   const aiActCoverage = calculateCoverage(aiActMatches, filteredAiActRules);
 
   const isoMatches = filteredIsoRules.map((rule) =>
-    checkRuleWithContext(rule, contentLower).matched
+    checkRuleWithAccumulator(rule, accumulator)
   );
   const isoCoverage = calculateCoverage(isoMatches, filteredIsoRules);
 
   // Find missing clauses (required ones that weren't found)
-  // Filter ALL_RULES by policy type and frameworks_selected override
+  // Filter ALL_RULES by applicability first (if context provided)
+  let allRulesToFilter = ALL_RULES;
+  const allRulesCacheKey = `${cacheKey}:ALL`;
+  if (applicabilityContext) {
+    allRulesToFilter = filterRulesByApplicability(ALL_RULES, applicabilityContext, allRulesCacheKey);
+  }
+
+  // Then filter by policy type and frameworks_selected override
   const filteredAllRules = policyType || frameworksSelected
-    ? filterRulesByPolicyType(ALL_RULES, policyType, frameworksSelected)
-    : ALL_RULES;
+    ? filterRulesByPolicyType(allRulesToFilter, policyType, frameworksSelected, `${allRulesCacheKey}:filtered`)
+    : allRulesToFilter;
 
   // Filter rules based on section eligibility: keep a rule if:
   // - getClauseEligibleSections(rule) returns empty array (no section restriction), OR
@@ -532,6 +1064,9 @@ export function analyzePolicyCompliance(
     });
   });
 
+  // Categorize rules by mandatory status
+  const { hardMandatory, softRequired } = categorizeRules(filteredRules);
+
   // Compute missing clauses using filteredRules
   const missingClauses = filteredRules.filter((rule) => {
     if (!rule.required) return false;
@@ -546,11 +1081,37 @@ export function analyzePolicyCompliance(
     required: rule.required,
   }));
 
+  // Track missing hard mandatory clauses separately
+  const missingMandatoryClauses = hardMandatory
+    .filter((rule) => {
+      const matched = checkRuleWithContext(rule, contentLower).matched;
+      return !matched;
+    })
+    .map((rule) => ({
+      framework: rule.framework,
+      article_ref: rule.article_ref,
+      clause_text: rule.clause_text,
+    }));
+
+  // Track missing soft required clauses separately
+  const missingRequiredClauses = softRequired
+    .filter((rule) => {
+      const matched = checkRuleWithContext(rule, contentLower).matched;
+      return !matched;
+    })
+    .map((rule) => ({
+      framework: rule.framework,
+      article_ref: rule.article_ref,
+      clause_text: rule.clause_text,
+    }));
+
   return {
     gdpr_coverage: Math.round(gdprCoverage * 100) / 100,
     ai_act_coverage: Math.round(aiActCoverage * 100) / 100,
     iso_42001_coverage: Math.round(isoCoverage * 100) / 100,
     missing_clauses: missingClauses,
+    missing_mandatory_clauses: missingMandatoryClauses.length > 0 ? missingMandatoryClauses : undefined,
+    missing_required_clauses: missingRequiredClauses.length > 0 ? missingRequiredClauses : undefined,
     section_scores: sectionScores,
   };
 }
@@ -718,20 +1279,21 @@ function expandKeyword(keyword: string): string[] {
 /**
  * Creates a fuzzy matching pattern that handles common typos
  * Uses character substitution patterns for common mistakes
+ * Uses regex cache to avoid recompiling patterns
  */
 function createFuzzyPattern(keyword: string): RegExp {
   // Escape special regex characters
   const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-  // Common typo patterns: missing/extra characters, character swaps
-  // For now, we'll use word boundary matching with case-insensitive flag
-  // More sophisticated fuzzy matching can be added later
-  return new RegExp(`\\b${escaped}\\b`, "gi");
+  const pattern = `\\b${escaped}\\b`;
+  
+  // Get from cache or create new
+  return regexCache.get(pattern, "gi");
 }
 
 /**
  * Checks if a keyword matches in content using word boundary matching
  * with support for variations and fuzzy matching
+ * Uses regex cache for performance optimization
  */
 function matchKeyword(keyword: string, content: string): boolean {
   // Expand keyword to include variations
@@ -739,11 +1301,12 @@ function matchKeyword(keyword: string, content: string): boolean {
 
   // Try exact word boundary match first (most reliable)
   for (const expandedKeyword of expandedKeywords) {
-    // Use word boundary regex for exact matches
-    const exactPattern = new RegExp(
-      `\\b${expandedKeyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
-      "i"
-    );
+    // Escape and create pattern
+    const escaped = expandedKeyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = `\\b${escaped}\\b`;
+    
+    // Get regex from cache
+    const exactPattern = regexCache.get(pattern, "i");
     if (exactPattern.test(content)) {
       return true;
     }
@@ -814,6 +1377,7 @@ function generateArticlePatterns(
 
 /**
  * Checks if article reference is found in content, even when split across lines
+ * Uses regex cache for performance optimization
  */
 function matchArticleReference(
   articleRef: string,
@@ -833,14 +1397,17 @@ function matchArticleReference(
       .replace(/\s+/g, "\\s*") // Allow flexible spacing
       .replace(/§/g, "§?"); // Optional section symbol
 
-    const regex = new RegExp(`\\b${regexPattern}\\b`, "i");
+    // Get regex from cache
+    const patternKey = `\\b${regexPattern}\\b`;
+    const regex = regexCache.get(patternKey, "i");
     if (regex.test(normalizedContent)) {
       return true;
     }
 
     // Also try without word boundaries for cases like "Art.6" (no space)
     const loosePattern = pattern.replace(/\s+/g, "\\s*");
-    const looseRegex = new RegExp(loosePattern, "i");
+    const loosePatternKey = loosePattern;
+    const looseRegex = regexCache.get(loosePatternKey, "i");
     if (looseRegex.test(normalizedContent)) {
       return true;
     }
@@ -858,7 +1425,7 @@ function matchArticleReference(
  */
 function splitIntoContextWindows(
   content: string,
-  windowSize: number = 100
+  windowSize: number = WINDOW_SIZES.STANDARD
 ): string[] {
   // First try to split by paragraphs (double newlines)
   const paragraphs = content
@@ -984,7 +1551,7 @@ function checkProximity(
     windowIndex: number;
   }>,
   articlePositions: Array<{ position: number; windowIndex: number }>,
-  maxDistance: number = 100
+  maxDistance: number = WINDOW_SIZES.MAX_DISTANCE
 ): { matched: boolean; score: number } {
   if (keywordPositions.length === 0 && articlePositions.length === 0) {
     return { matched: false, score: 0 };
@@ -1010,12 +1577,12 @@ function checkProximity(
 
   // If we have keywords but no article refs, give partial score (clause might be addressed)
   if (keywordPositions.length > 0 && articlePositions.length === 0) {
-    return { matched: false, score: 0.4 }; // Partial score - keywords found
+    return { matched: false, score: CO_OCCURRENCE_THRESHOLDS.KEYWORD_ONLY }; // Partial score - keywords found
   }
 
   // If we have article refs but no keywords, give partial score (might be in mapping appendix)
   if (articlePositions.length > 0 && keywordPositions.length === 0) {
-    return { matched: false, score: 0.3 }; // Lower score - only article ref
+    return { matched: false, score: CO_OCCURRENCE_THRESHOLDS.STRONG }; // Lower score - only article ref
   }
 
   // Match if we found keywords AND article refs in proximity
@@ -1068,8 +1635,157 @@ function checkKeywordCoOccurrence(
 }
 
 /**
+ * Check if keywords and article references appear in proximity
+ * Returns match result with proximity information
+ */
+function checkProximityMatch(
+  keywordPositions: Array<{ keyword: string; position: number; windowIndex: number }>,
+  articlePositions: Array<{ position: number; windowIndex: number }>,
+  proximityResult: { matched: boolean; score: number }
+): {
+  hasProximityMatch: boolean;
+  hasNearbyMatch: boolean;
+  hasKeywordsAndRefsInDocument: boolean;
+} {
+  const hasArticleRefs = articlePositions.length > 0;
+  const hasKeywords = keywordPositions.length > 0;
+  const hasKeywordsAndRefsInDocument = hasKeywords && hasArticleRefs;
+  
+  // Check if keywords and article refs are in exact proximity
+  const hasProximityMatch = proximityResult.matched && hasKeywords && hasArticleRefs;
+  
+  // Check if keywords and article refs are within nearby windows
+  let hasNearbyMatch = false;
+  if (hasKeywords && hasArticleRefs) {
+    const keywordWindowIndices = new Set(keywordPositions.map(p => p.windowIndex));
+    const articleWindowIndices = new Set(articlePositions.map(p => p.windowIndex));
+    
+    for (const kwIdx of keywordWindowIndices) {
+      for (const artIdx of articleWindowIndices) {
+        if (Math.abs(kwIdx - artIdx) <= WINDOW_SIZES.NEARBY_DISTANCE) {
+          hasNearbyMatch = true;
+          break;
+        }
+      }
+      if (hasNearbyMatch) break;
+    }
+  }
+  
+  return {
+    hasProximityMatch,
+    hasNearbyMatch,
+    hasKeywordsAndRefsInDocument,
+  };
+}
+
+/**
+ * Check keyword co-occurrence match requirements
+ * Returns whether keywords meet co-occurrence thresholds
+ */
+function checkKeywordCoOccurrenceMatch(
+  rule: ComplianceRule,
+  coOccurrenceResult: { matchedKeywords: string[]; coOccurrenceScore: number }
+): {
+  hasKeywordsWithCoOccurrence: boolean;
+  hasMinKeywords: boolean;
+  hasStrongKeywordPresence: boolean;
+  hasKeywordOnlyMatch: boolean;
+  hasKeywords: boolean;
+  hasArticleRefs: boolean;
+} {
+  const isComplexRule = rule.keywords.length >= 5;
+  const minCoOccurrenceThreshold = isComplexRule 
+    ? CO_OCCURRENCE_THRESHOLDS.COMPLEX 
+    : CO_OCCURRENCE_THRESHOLDS.SIMPLE;
+  
+  const minKeywordCount = rule.required 
+    ? KEYWORD_THRESHOLDS.REQUIRED 
+    : KEYWORD_THRESHOLDS.OPTIONAL;
+  
+  const hasKeywordsWithCoOccurrence =
+    coOccurrenceResult.coOccurrenceScore >= minCoOccurrenceThreshold;
+  const hasMinKeywords = 
+    coOccurrenceResult.matchedKeywords.length >= minKeywordCount;
+  
+  const hasStrongKeywordPresence =
+    coOccurrenceResult.coOccurrenceScore >= CO_OCCURRENCE_THRESHOLDS.STRONG &&
+    coOccurrenceResult.matchedKeywords.length >= Math.max(
+      KEYWORD_THRESHOLDS.OPTIONAL, 
+      Math.ceil(rule.keywords.length * KEYWORD_THRESHOLDS.KEYWORD_ONLY_PERCENTAGE)
+    );
+  
+  // Keyword-only match (no article refs needed)
+  const hasKeywordOnlyMatch =
+    coOccurrenceResult.coOccurrenceScore >= CO_OCCURRENCE_THRESHOLDS.KEYWORD_ONLY &&
+    coOccurrenceResult.matchedKeywords.length >= Math.max(
+      KEYWORD_THRESHOLDS.REQUIRED, 
+      Math.ceil(rule.keywords.length * KEYWORD_THRESHOLDS.KEYWORD_ONLY_PERCENTAGE)
+    );
+  
+  return {
+    hasKeywordsWithCoOccurrence,
+    hasMinKeywords,
+    hasStrongKeywordPresence,
+    hasKeywordOnlyMatch,
+    hasKeywords: coOccurrenceResult.matchedKeywords.length > 0,
+    hasArticleRefs: false, // Will be set by caller
+  };
+}
+
+/**
+ * Combine all match results to determine final match status
+ */
+function combineMatchResults(
+  proximityMatch: {
+    hasProximityMatch: boolean;
+    hasNearbyMatch: boolean;
+    hasKeywordsAndRefsInDocument: boolean;
+  },
+  keywordMatch: {
+    hasKeywordsWithCoOccurrence: boolean;
+    hasMinKeywords: boolean;
+    hasStrongKeywordPresence: boolean;
+    hasKeywordOnlyMatch: boolean;
+    hasKeywords: boolean;
+    hasArticleRefs: boolean;
+  },
+  articlePositions: Array<{ position: number; windowIndex: number }>
+): boolean {
+  const hasArticleRefs = articlePositions.length > 0;
+  const hasKeywords = keywordMatch.hasKeywords;
+  
+  // Update hasArticleRefs in keywordMatch result
+  keywordMatch.hasArticleRefs = hasArticleRefs;
+  
+  // Full match: proximity/nearby + co-occurrence + minimum keywords
+  const hasFullMatch =
+    (proximityMatch.hasProximityMatch || proximityMatch.hasNearbyMatch) &&
+    keywordMatch.hasKeywordsWithCoOccurrence &&
+    keywordMatch.hasMinKeywords;
+  
+  // Partial match: keywords and refs in document + co-occurrence + minimum keywords
+  const hasPartialMatch =
+    proximityMatch.hasKeywordsAndRefsInDocument &&
+    keywordMatch.hasKeywordsWithCoOccurrence &&
+    keywordMatch.hasMinKeywords;
+  
+  // Strong keyword presence (even without article refs)
+  const hasStrongKeywordPresence = 
+    hasKeywords &&
+    keywordMatch.hasStrongKeywordPresence;
+  
+  // Keyword-only match (no article refs)
+  const hasKeywordOnlyMatch =
+    hasKeywords &&
+    !hasArticleRefs &&
+    keywordMatch.hasKeywordOnlyMatch;
+  
+  return hasFullMatch || hasPartialMatch || hasStrongKeywordPresence || hasKeywordOnlyMatch;
+}
+
+/**
  * Context-aware rule checking with proximity-based matching
- * Checks if keywords appear within same paragraph (or 100-word window)
+ * Checks if keywords appear within same paragraph (or standard word window)
  * Verifies article references appear near relevant keywords
  * Scores matches higher when keyword + article ref appear together
  */
@@ -1088,8 +1804,8 @@ function checkRuleWithContext(
 } {
   const normalizedContent = content.toLowerCase().replace(/\s+/g, " ");
 
-  // Split content into context windows (paragraphs or 100-word chunks)
-  const windows = splitIntoContextWindows(normalizedContent, 100);
+  // Split content into context windows (paragraphs or standard word chunks)
+  const windows = splitIntoContextWindows(normalizedContent, WINDOW_SIZES.STANDARD);
 
   // Find keyword positions
   const keywordPositions = findKeywordPositions(
@@ -1110,7 +1826,7 @@ function checkRuleWithContext(
   const proximityResult = checkProximity(
     keywordPositions,
     articlePositions,
-    100
+    WINDOW_SIZES.MAX_DISTANCE
   );
 
   // Check keyword co-occurrence for semantic relationship detection
@@ -1119,11 +1835,6 @@ function checkRuleWithContext(
     normalizedContent,
     windows
   );
-
-  // For complex rules (multiple keywords), require higher co-occurrence
-  // RELAXED: Reduced thresholds significantly for better detection
-  const isComplexRule = rule.keywords.length >= 5; // Increased from 3 to 5 for complex rule threshold
-  const minCoOccurrenceThreshold = isComplexRule ? 0.25 : 0.15; // Reduced from 0.4/0.25 to 0.25/0.15
 
   // Calculate context score based on section name (if provided)
   let contextScore = 1.0;
@@ -1137,96 +1848,18 @@ function checkRuleWithContext(
     coOccurrenceResult.coOccurrenceScore * 0.4 +
     contextScore * 0.2;
 
-  // Multiple conditions for matching
-  const hasArticleRefs = articlePositions.length > 0;
-  const hasKeywords = keywordPositions.length > 0;
-  const hasKeywordsWithCoOccurrence =
-    coOccurrenceResult.coOccurrenceScore >= minCoOccurrenceThreshold;
+  // Check proximity match
+  const proximityMatch = checkProximityMatch(
+    keywordPositions,
+    articlePositions,
+    proximityResult
+  );
 
-  // Check for content length/substance - make this less strict
-  // Check if any window with keywords has reasonable content (not just isolated mentions)
-  // RELAXED: Reduced word count threshold from 30 to 15 for better matching
-  let hasSubstantialContent = false;
-  if (hasKeywords) {
-    // Find windows that contain keywords
-    const keywordWindows = windows.filter((_, idx) => {
-      return keywordPositions.some((pos) => pos.windowIndex === idx);
-    });
-    
-    // Check if any keyword window has reasonable content (>15 words, not just mentions)
-    hasSubstantialContent = keywordWindows.some(
-      (window) => window.split(/\s+/).length > 15
-    );
-  }
+  // Check keyword co-occurrence match
+  const keywordMatch = checkKeywordCoOccurrenceMatch(rule, coOccurrenceResult);
 
-  // For required rules, use more lenient minimum keyword count
-  const minKeywordCount = rule.required ? 1 : 1; // Lowered from 2 to 1
-  const hasMinKeywords = 
-    coOccurrenceResult.matchedKeywords.length >= minKeywordCount;
-
-  // Check if keywords and article refs appear anywhere in the document (not just same window)
-  // This allows for cases where they're in different sections but both present
-  const hasKeywordsAndRefsInDocument = hasKeywords && hasArticleRefs;
-
-  // Match conditions (more flexible):
-  // 1. Keywords AND article refs in proximity (strongest match)
-  // 2. Keywords with good co-occurrence AND article refs anywhere in document
-  // 3. Strong keyword presence (high co-occurrence) even without article refs in proximity
-  // 4. Article refs with keywords nearby (within 2 windows)
-  const hasProximityMatch = proximityResult.matched && hasKeywords && hasArticleRefs;
-  
-  // Check if keywords and article refs are within nearby windows (more lenient)
-  // RELAXED: Increased window distance from 2 to 4 for better matching across sections
-  let hasNearbyMatch = false;
-  if (hasKeywords && hasArticleRefs) {
-    const keywordWindowIndices = new Set(keywordPositions.map(p => p.windowIndex));
-    const articleWindowIndices = new Set(articlePositions.map(p => p.windowIndex));
-    
-    // Check if any keyword window is within 4 windows of any article ref window
-    for (const kwIdx of keywordWindowIndices) {
-      for (const artIdx of articleWindowIndices) {
-        if (Math.abs(kwIdx - artIdx) <= 4) {
-          hasNearbyMatch = true;
-          break;
-        }
-      }
-      if (hasNearbyMatch) break;
-    }
-  }
-
-  // Strong keyword presence (even without article refs in proximity)
-  // RELAXED: Further reduced thresholds for better detection of content that addresses clauses
-  const hasStrongKeywordPresence =
-    hasKeywords &&
-    coOccurrenceResult.coOccurrenceScore >= 0.35 && // Reduced from 0.5 to 0.35
-    coOccurrenceResult.matchedKeywords.length >= Math.max(1, Math.ceil(rule.keywords.length * 0.25)); // Reduced from 2/0.4 to 1/0.25
-
-  // Match if:
-  // 1. Proximity match with co-occurrence
-  // 2. Keywords and article refs nearby (within 4 windows) with co-occurrence
-  // 3. Strong keyword presence with article refs anywhere in document
-  // 4. Very strong keyword presence even without article refs (for cases where article ref might be in mapping appendix)
-  // 5. Keywords only match with good co-occurrence (NEW - for better detection)
-  // RELAXED: Removed substantial content requirement for non-required rules
-  const hasFullMatch =
-    (hasProximityMatch || hasNearbyMatch) &&
-    hasKeywordsWithCoOccurrence &&
-    hasMinKeywords;
-
-  const hasPartialMatch =
-    hasKeywordsAndRefsInDocument &&
-    hasKeywordsWithCoOccurrence &&
-    hasMinKeywords;
-
-  // NEW: Allow keyword-only matches when we have good keyword co-occurrence
-  // This helps match content that addresses clauses without explicit article citations
-  const hasKeywordOnlyMatch =
-    hasKeywords &&
-    !hasArticleRefs &&
-    coOccurrenceResult.coOccurrenceScore >= 0.4 && // Higher threshold for keyword-only matches
-    coOccurrenceResult.matchedKeywords.length >= Math.max(2, Math.ceil(rule.keywords.length * 0.3));
-
-  const matched = hasFullMatch || hasPartialMatch || hasStrongKeywordPresence || hasKeywordOnlyMatch;
+  // Combine all match results
+  const matched = combineMatchResults(proximityMatch, keywordMatch, articlePositions);
 
   return {
     matched,
@@ -1436,8 +2069,12 @@ function checkRule(rule: ComplianceRule, content: string): boolean {
   // RELAXED: Significantly reduced thresholds for better matching
   if (keywordMatch && !articleMatch) {
     // Different thresholds for required vs optional rules
-    const minKeywords = rule.required ? 2 : 1; // Reduced from 3/2 to 2/1
-    const percentageThreshold = rule.required ? 0.4 : 0.3; // Reduced from 0.6/0.5 to 0.4/0.3
+    const minKeywords = rule.required 
+      ? KEYWORD_THRESHOLDS.REQUIRED 
+      : KEYWORD_THRESHOLDS.OPTIONAL;
+    const percentageThreshold = rule.required 
+      ? KEYWORD_THRESHOLDS.REQUIRED_PERCENTAGE 
+      : KEYWORD_THRESHOLDS.OPTIONAL_PERCENTAGE;
     const keywordThreshold = Math.max(
       minKeywords,
       Math.ceil(rule.keywords.length * percentageThreshold)
@@ -1449,7 +2086,7 @@ function checkRule(rule: ComplianceRule, content: string): boolean {
 
     // Verify keywords aren't just isolated mentions
     // Check for keyword density - matched keywords should appear in proximity
-    const windows = splitIntoContextWindows(normalizedContent, 150);
+    const windows = splitIntoContextWindows(normalizedContent, WINDOW_SIZES.EXTENDED);
     let maxKeywordsInWindow = 0;
 
     for (const window of windows) {
@@ -1459,8 +2096,8 @@ function checkRule(rule: ComplianceRule, content: string): boolean {
       maxKeywordsInWindow = Math.max(maxKeywordsInWindow, keywordsInWindow);
     }
 
-    // Require at least 30% of matched keywords to appear in same context window (reduced from 50%)
-    const densityThreshold = Math.ceil(matchedKeywords.length * 0.3);
+    // Require at least minimum density of matched keywords to appear in same context window
+    const densityThreshold = Math.ceil(matchedKeywords.length * CONTENT_THRESHOLDS.KEYWORD_DENSITY);
     return maxKeywordsInWindow >= densityThreshold;
   }
 
@@ -1662,7 +2299,8 @@ export type QualityScoreResult = {
 export function calculateQualityScore(
   rawContent: string,
   policyType: PolicyType,
-  policyCopResult?: PolicyCopResult
+  policyCopResult?: PolicyCopResult,
+  applicabilityContext?: RuleApplicability
 ): QualityScoreResult {
   const issues: string[] = [];
   const checks = {
@@ -1718,19 +2356,18 @@ export function calculateQualityScore(
   checks.frameworkReferences.count = mappings.length;
   
   // Consider framework references valid if we have at least some references
-  // Minimum threshold: at least 5 references for a good policy
-  const minFrameworkRefs = 5;
-  checks.frameworkReferences.isValid = checks.frameworkReferences.count >= minFrameworkRefs;
+  // Minimum threshold for a good policy
+  checks.frameworkReferences.isValid = checks.frameworkReferences.count >= FRAMEWORK_REFERENCES.MINIMUM_COUNT;
 
   if (!checks.frameworkReferences.isValid) {
     issues.push(
-      `Insufficient framework references found: ${checks.frameworkReferences.count} (minimum: ${minFrameworkRefs})`
+      `Insufficient framework references found: ${checks.frameworkReferences.count} (minimum: ${FRAMEWORK_REFERENCES.MINIMUM_COUNT})`
     );
   }
 
   // Check PolicyCop coverage thresholds (if PolicyCop result provided)
   if (policyCopResult) {
-    const thresholds = getPolicyThresholds(policyType);
+    const thresholds = getPolicyThresholds(policyType, applicabilityContext);
     const coverageDetails: {
       framework: string;
       coverage: number;
@@ -1875,11 +2512,13 @@ export function validatePolicyQuality(
   policyType: PolicyType,
   options?: {
     frameworks_selected?: string[];
+    applicabilityContext?: RuleApplicability;
   }
 ): PolicyQualityValidationResult {
   const issues: string[] = [];
   const warnings: string[] = [];
   const actionableFeedback: string[] = [];
+  const applicabilityContext = options?.applicabilityContext;
 
   // Run PolicyCop analysis
   const policyCopResult = analyzePolicyCompliance(policyContent, policyType, options);
@@ -1888,11 +2527,12 @@ export function validatePolicyQuality(
   const qualityScoreResult = calculateQualityScore(
     policyContent,
     policyType,
-    policyCopResult
+    policyCopResult,
+    applicabilityContext
   );
 
-  // Get policy-specific thresholds
-  const thresholds = getPolicyThresholds(policyType);
+  // Get policy-specific thresholds (dynamic if applicability context provided)
+  const thresholds = getPolicyThresholds(policyType, applicabilityContext);
   const thresholdMargin = 0.1; // 10% margin
 
   // Check coverage against thresholds with margin
@@ -1989,13 +2629,36 @@ export function validatePolicyQuality(
     );
   }
 
+  // Check for missing hard mandatory clauses (fail validation if any are missing)
+  const hasMissingMandatoryClauses = 
+    policyCopResult.missing_mandatory_clauses && 
+    policyCopResult.missing_mandatory_clauses.length > 0;
+
+  if (hasMissingMandatoryClauses) {
+    const mandatoryClauses = policyCopResult.missing_mandatory_clauses!;
+    issues.push(
+      `Missing ${mandatoryClauses.length} mandatory clause(s) that must be present: ${mandatoryClauses
+        .slice(0, 5)
+        .map((c) => `${c.framework} ${c.article_ref}`)
+        .join(", ")}${mandatoryClauses.length > 5 ? "..." : ""}`
+    );
+    actionableFeedback.push(
+      `CRITICAL: Add missing mandatory clauses: ${mandatoryClauses
+        .slice(0, 3)
+        .map((c) => `${c.framework} ${c.article_ref} - ${c.clause_text.substring(0, 50)}`)
+        .join("; ")}`
+    );
+  }
+
   // Determine overall validity
   // Policy is valid if:
-  // - Quality score >= 0.7
+  // - Quality score meets minimum threshold
   // - All coverage thresholds met (with margin)
+  // - No missing hard mandatory clauses
   // - No critical structural issues
   const isValid =
-    qualityScoreResult.score >= 0.6 &&
+    !hasMissingMandatoryClauses &&
+    qualityScoreResult.score >= QUALITY_THRESHOLDS.MINIMUM &&
     policyCopResult.gdpr_coverage >= adjustedThresholds.gdpr &&
     policyCopResult.ai_act_coverage >= adjustedThresholds.ai_act &&
     policyCopResult.iso_42001_coverage >= adjustedThresholds.iso_42001 &&

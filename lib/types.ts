@@ -1,46 +1,55 @@
-export type PrivacyQuestionnaire = {
-  company_name: string;
-  jurisdictions: Array<
-    "GDPR (EU)" | "CCPA (California)" | "UK GDPR" | "PIPEDA (Canada)"
-  >;
-  data_collected: Array<
-    "Email" | "Name" | "IP address" | "Device data" | "Payment info"
-  >;
-  purpose_of_processing: string;
-  third_parties: "Yes" | "No";
-  cookies_used: "Yes" | "No";
-  data_retention:
-    | "30 days"
-    | "6 months"
-    | "1 year"
-    | "Indefinitely"
-    | "Until request for deletion";
-  dpo_contact: string;
-  // Maybe in future:
-  // service_description?: string; // used in ToS later
-};
+import { z } from "zod";
 
-export type AIUsageQuestionnaire = {
-  company_name: string;
-  ai_used_where: Array<"support" | "content" | "analytics" | "coding">;
-  ai_model_provider: "OpenAI" | "Anthropic" | "open-source" | "other";
-  data_sent_to_models: string;
-  human_oversight_level: "low" | "medium" | "high";
-  ai_risk_rating: "low" | "medium" | "high";
-  ai_retraining_frequency: "never" | "quarterly" | "annually" | "as-needed";
-  responsible_person: string;
-};
+// Zod schemas for runtime validation
+export const PrivacyQuestionnaireSchema = z.object({
+  company_name: z.string().min(1, "Company name is required"),
+  jurisdictions: z.array(
+    z.enum(["GDPR (EU)", "CCPA (California)", "UK GDPR", "PIPEDA (Canada)"])
+  ).min(1, "At least one jurisdiction is required"),
+  data_collected: z.array(
+    z.enum(["Email", "Name", "IP address", "Device data", "Payment info"])
+  ).min(1, "At least one data type is required"),
+  purpose_of_processing: z.string().min(1, "Purpose of processing is required"),
+  third_parties: z.enum(["Yes", "No"]),
+  cookies_used: z.enum(["Yes", "No"]),
+  data_retention: z.enum([
+    "30 days",
+    "6 months",
+    "1 year",
+    "Indefinitely",
+    "Until request for deletion",
+  ]),
+  dpo_contact: z.string().email("Valid email address is required for DPO contact"),
+});
 
-export type AIGovernanceQuestionnaire = {
-  company_name: string;
-  ai_governance_owner_role: string;
-  documentation_frequency: "quarterly" | "annually";
-  responsible_ai_principles: Array<
-    "Transparency" | "Fairness" | "Accountability"
-  >;
-  training_provided: "Yes" | "No";
-  incident_reporting_procedure: "Yes" | "No";
-};
+export const AIUsageQuestionnaireSchema = z.object({
+  company_name: z.string().min(1, "Company name is required"),
+  ai_used_where: z.array(
+    z.enum(["support", "content", "analytics", "coding"])
+  ).min(1, "At least one AI usage location is required"),
+  ai_model_provider: z.enum(["OpenAI", "Anthropic", "open-source", "other"]),
+  data_sent_to_models: z.string().min(1, "Data sent to models description is required"),
+  human_oversight_level: z.enum(["low", "medium", "high"]),
+  ai_risk_rating: z.enum(["low", "medium", "high"]),
+  ai_retraining_frequency: z.enum(["never", "quarterly", "annually", "as-needed"]),
+  responsible_person: z.string().min(1, "Responsible person is required"),
+});
+
+export const AIGovernanceQuestionnaireSchema = z.object({
+  company_name: z.string().min(1, "Company name is required"),
+  ai_governance_owner_role: z.string().min(1, "AI governance owner role is required"),
+  documentation_frequency: z.enum(["quarterly", "annually"]),
+  responsible_ai_principles: z.array(
+    z.enum(["Transparency", "Fairness", "Accountability"])
+  ).min(1, "At least one responsible AI principle is required"),
+  training_provided: z.enum(["Yes", "No"]),
+  incident_reporting_procedure: z.enum(["Yes", "No"]),
+});
+
+// TypeScript types inferred from Zod schemas
+export type PrivacyQuestionnaire = z.infer<typeof PrivacyQuestionnaireSchema>;
+export type AIUsageQuestionnaire = z.infer<typeof AIUsageQuestionnaireSchema>;
+export type AIGovernanceQuestionnaire = z.infer<typeof AIGovernanceQuestionnaireSchema>;
 
 export type PolicyMapping = {
   id: string;
@@ -90,3 +99,24 @@ export type QuestionnaireRow = {
   created_at: string;
   updated_at: string;
 };
+
+/**
+ * RuleApplicability context derived from questionnaire answers
+ * Determines which compliance rules apply to a specific company/policy
+ */
+export type RuleApplicability = {
+  usesAIForPersonalData?: boolean;
+  deploysHighRiskAI?: boolean;
+  offersAIAsProductInEU?: boolean;
+  usesAutomatedDecisionMaking?: boolean;
+  processesSpecialCategoryData?: boolean;
+  hasInternationalTransfers?: boolean;
+  usesThirdPartyProcessors?: boolean;
+  hasHighRiskProcessing?: boolean;
+};
+
+/**
+ * Function type for rule-level applicability checks
+ * Returns true if the rule applies given the context
+ */
+export type ApplicabilityFunction = (context: RuleApplicability) => boolean;
