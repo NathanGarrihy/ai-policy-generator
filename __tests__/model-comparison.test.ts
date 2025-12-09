@@ -2,21 +2,6 @@
  * Model Comparison Tests
  * 
  * Compares GPT-3.5-turbo vs GPT-4 outputs and validates quality meets ≥90% threshold
- * 
- * To run these tests, will need to set up a test framework (Jest/Vitest) and configure it.
- * 
- * Example Jest configuration:
- * ```json
- * {
- *   "jest": {
- *     "preset": "ts-jest",
- *     "testEnvironment": "node",
- *     "moduleNameMapper": {
- *       "^@/(.*)$": "<rootDir>/$1"
- *     }
- *   }
- * }
- * ```
  */
 
 import {
@@ -326,8 +311,6 @@ export async function manualValidationProcess() {
   };
 }
 
-// Example Jest/Vitest test structure (uncomment when test framework is configured)
-/*
 describe("Model Comparison Tests", () => {
   it("should compare GPT-3.5-turbo vs GPT-4 outputs for privacy policy", async () => {
     const result = await compareModelOutputs(
@@ -346,5 +329,4 @@ describe("Model Comparison Tests", () => {
     expect(validation.meetsThreshold).toBe(true);
   });
 });
-*/
 

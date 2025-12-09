@@ -2,13 +2,12 @@
  * Quality Validation Tests
  * 
  * Tests that quality scoring catches low-quality outputs and retry logic triggers correctly
- * 
- * To run these tests, you'll need to set up a test framework (Jest/Vitest) and configure it.
  */
 
 import {
   calculateQualityScore,
   validatePolicyQuality,
+  analyzePolicyCompliance,
   type PolicyType,
   type PolicyCopResult,
 } from "@/lib/policycop";
@@ -384,11 +383,6 @@ export function testValidatePolicyQuality() {
   };
 }
 
-// Import analyzePolicyCompliance for use in tests
-import { analyzePolicyCompliance } from "@/lib/policycop";
-
-// Example Jest/Vitest test structure (uncomment when test framework is configured)
-/*
 describe("Quality Validation Tests", () => {
   it("should catch low-quality outputs", () => {
     const result = testQualityScoringCatchesLowQuality();
@@ -409,5 +403,4 @@ describe("Quality Validation Tests", () => {
     expect(result.allTestsPass).toBe(true);
   });
 });
-*/
 
