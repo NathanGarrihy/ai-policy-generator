@@ -26,6 +26,11 @@ import {
   GENERATION_CONFIG,
 } from "@/lib/constants";
 import { rateLimitMiddleware, logRateLimitViolation } from "@/lib/rate-limit";
+import { authenticateRequest } from "@/lib/auth-middleware";
+import { QualityTierSchema } from "@/lib/validation";
+import { checkQuotaMiddleware, incrementQuota } from "@/lib/quota";
+import { parseRequestBody } from "@/lib/request-helpers";
+import { createErrorResponse, handleError } from "@/lib/error-handler";
 
 type QualityTier = "standard" | "premium";
 
@@ -162,8 +167,10 @@ async function generatePolicyWithValidation(
         userMessage = userMessage + feedbackText;
       }
 
-      // Log attempt start
-      console.log(`[Policy Generation] Attempt ${attempt}/${maxAttempts} using ${modelName}`);
+      // Log attempt start (only in development)
+      if (process.env.NODE_ENV === "development") {
+        console.log(`[Policy Generation] Attempt ${attempt}/${maxAttempts} using ${modelName}`);
+      }
 
       // Call OpenAI API
       const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -284,18 +291,20 @@ async function generatePolicyWithValidation(
       attemptLog.endTime = Date.now();
       attemptLog.duration = attemptLog.endTime - attemptLog.startTime;
 
-      // Log attempt results
-      console.log(`[Policy Generation] Attempt ${attempt} completed:`, {
-        model: modelName,
-        qualityScore: qualityScore.toFixed(3),
-        gdprCoverage: (policyCopResult.gdpr_coverage * 100).toFixed(1) + "%",
-        aiActCoverage: (policyCopResult.ai_act_coverage * 100).toFixed(1) + "%",
-        iso42001Coverage: (policyCopResult.iso_42001_coverage * 100).toFixed(1) + "%",
-        duration: `${attemptLog.duration}ms`,
-        retryCount: attempt - 1,
-        tokenUsage: attemptLog.tokenUsage,
-        estimatedCostUsd: attemptLog.estimatedCostUsd,
-      });
+      // Log attempt results (only in development or with verbose logging)
+      if (process.env.NODE_ENV === "development" || process.env.ENABLE_VERBOSE_LOGGING === "true") {
+        console.log(`[Policy Generation] Attempt ${attempt} completed:`, {
+          model: modelName,
+          qualityScore: qualityScore.toFixed(3),
+          gdprCoverage: (policyCopResult.gdpr_coverage * 100).toFixed(1) + "%",
+          aiActCoverage: (policyCopResult.ai_act_coverage * 100).toFixed(1) + "%",
+          iso42001Coverage: (policyCopResult.iso_42001_coverage * 100).toFixed(1) + "%",
+          duration: `${attemptLog.duration}ms`,
+          retryCount: attempt - 1,
+          tokenUsage: attemptLog.tokenUsage,
+          estimatedCostUsd: attemptLog.estimatedCostUsd,
+        });
+      }
 
       // Check if quality is acceptable
       const meetsQualityThreshold = qualityScore >= qualityThreshold;
@@ -326,7 +335,9 @@ async function generatePolicyWithValidation(
         attemptLog.success = true;
         attempts.push(attemptLog);
         
-        console.log(`[Policy Generation] Success on attempt ${attempt} with ${modelName}`);
+        if (process.env.NODE_ENV === "development") {
+          console.log(`[Policy Generation] Success on attempt ${attempt} with ${modelName}`);
+        }
         
         return {
           rawContent,
@@ -358,9 +369,11 @@ async function generatePolicyWithValidation(
         
         // If this was the last attempt, return anyway (fallback to GPT-4 should have been used)
         if (isLastAttempt) {
-          console.log(
-            `[Policy Generation] Last attempt completed but quality below threshold. Returning result anyway.`
-          );
+          if (process.env.NODE_ENV === "development") {
+            console.log(
+              `[Policy Generation] Last attempt completed but quality below threshold. Returning result anyway.`
+            );
+          }
           return {
             rawContent,
             parsed,
@@ -370,11 +383,13 @@ async function generatePolicyWithValidation(
           };
         }
         
-        // Continue to next attempt
-        console.log(`[Policy Generation] Attempt ${attempt} quality insufficient (score: ${qualityScore.toFixed(3)}), retrying...`);
+        // Continue to next attempt (log only in development)
+        if (process.env.NODE_ENV === "development") {
+          console.log(`[Policy Generation] Attempt ${attempt} quality insufficient (score: ${qualityScore.toFixed(3)}), retrying...`);
+        }
       }
-    } catch (error: any) {
-      attemptLog.error = error.message || String(error);
+    } catch (error: unknown) {
+      attemptLog.error = error instanceof Error ? error.message : String(error);
       attemptLog.endTime = Date.now();
       attemptLog.duration = attemptLog.endTime - attemptLog.startTime;
       attempts.push(attemptLog);
@@ -397,28 +412,90 @@ export async function POST(req: Request) {
   const requestStartTime = Date.now();
   
   try {
-    // Extract quality tier for rate limiting (before parsing body)
-    const url = new URL(req.url);
-    const qualityTierParam = url.searchParams.get("qualityTier") || "standard";
-    const tier = qualityTierParam === "premium" ? "premium" : "standard";
-    
-    // Apply rate limiting
-    const rateLimitResponse = rateLimitMiddleware(req, tier);
-    if (rateLimitResponse) {
-      // Get identifier for logging
-      const forwarded = req.headers.get("x-forwarded-for");
-      const ip = forwarded ? forwarded.split(",")[0].trim() : "unknown";
-      logRateLimitViolation(ip !== "unknown" ? ip : "anonymous", tier, "/api/generate-policy");
-      return rateLimitResponse;
+    // Authenticate request first
+    const authResult = await authenticateRequest();
+    if (!authResult.authenticated) {
+      return authResult.response;
+    }
+    const { userId, user } = authResult;
+
+    // Parse and validate request body (optimized - single read)
+    interface GenerateRequestBody {
+      questionnaireData?: Record<string, unknown>;
+      policyType?: string;
+      model?: string;
+      qualityTier?: string;
+      mode?: string;
     }
     
-    const body = await req.json();
+    const parseResult = await parseRequestBody<GenerateRequestBody>(req, 2 * 1024 * 1024); // 2MB max
+    if (parseResult instanceof NextResponse) {
+      return parseResult; // Error response
+    }
+    const { body } = parseResult;
     const { questionnaireData, policyType, model, qualityTier, mode } = body;
 
+    // Extract quality tier from query param (preferred) or body
+    // Use single source of truth to avoid tier mismatch
+    const url = new URL(req.url);
+    const qualityTierParam = url.searchParams.get("qualityTier");
+    
+    // Determine tier: query param takes precedence, then body, then default to standard
+    let tier: "standard" | "premium" = "standard";
+    if (qualityTierParam) {
+      const queryTierResult = QualityTierSchema.safeParse(qualityTierParam);
+      if (!queryTierResult.success) {
+        return createErrorResponse(
+          "VALIDATION_ERROR",
+          "Invalid qualityTier in query parameter",
+          queryTierResult.error.errors
+        );
+      }
+      tier = queryTierResult.data;
+    } else {
+      // Fallback to body if query param not provided
+      const bodyTier = (qualityTier ?? mode) as string | undefined;
+      if (bodyTier) {
+        const bodyTierResult = QualityTierSchema.safeParse(bodyTier);
+        if (!bodyTierResult.success) {
+          return createErrorResponse(
+            "VALIDATION_ERROR",
+            "Invalid qualityTier in request body",
+            bodyTierResult.error.errors
+          );
+        }
+        tier = bodyTierResult.data;
+      }
+    }
+    
+    // Warn if tier mismatch detected (for debugging)
+    if (qualityTierParam && (qualityTier || mode) && qualityTierParam !== (qualityTier || mode)) {
+      if (process.env.NODE_ENV === "development") {
+        console.warn("[Policy Generation] Tier mismatch detected:", {
+          queryParam: qualityTierParam,
+          bodyTier: qualityTier || mode,
+          using: tier,
+        });
+      }
+    }
+    
+    // Apply rate limiting with authenticated user ID
+    const rateLimitResponse = rateLimitMiddleware(req, tier, userId);
+    if (rateLimitResponse) {
+      logRateLimitViolation(userId, tier, "/api/generate-policy");
+      return rateLimitResponse;
+    }
+
+    // Check per-user generation quota
+    const quotaResponse = checkQuotaMiddleware(userId, tier);
+    if (quotaResponse) {
+      return quotaResponse;
+    }
+
     if (!questionnaireData || !policyType) {
-      return NextResponse.json(
-        { error: "questionnaireData and policyType are required" },
-        { status: 400 }
+      return createErrorResponse(
+        "VALIDATION_ERROR",
+        "questionnaireData and policyType are required"
       );
     }
 
@@ -432,36 +509,35 @@ export async function POST(req: Request) {
       } else if (policyType === "ai_governance_policy") {
         validatedQuestionnaireData = AIGovernanceQuestionnaireSchema.parse(questionnaireData);
       } else {
-        return NextResponse.json(
-          { error: `Invalid policy type: ${policyType}` },
-          { status: 400 }
+        return createErrorResponse(
+          "VALIDATION_ERROR",
+          `Invalid policy type: ${policyType}`
         );
       }
-    } catch (validationError: any) {
-      if (validationError.errors) {
+    } catch (validationError: unknown) {
+      if (validationError && typeof validationError === "object" && "errors" in validationError) {
         // Zod validation error
-        return NextResponse.json(
-          {
-            error: "Validation failed",
-            details: validationError.errors.map((err: any) => ({
-              path: err.path.join("."),
-              message: err.message,
-            })),
-          },
-          { status: 400 }
+        const zodError = validationError as { errors: Array<{ path: (string | number)[]; message: string }> };
+        return createErrorResponse(
+          "VALIDATION_ERROR",
+          "Questionnaire data validation failed",
+          zodError.errors.map((err) => ({
+            path: err.path.join("."),
+            message: err.message,
+          }))
         );
       }
-      return NextResponse.json(
-        { error: "Invalid questionnaire data format" },
-        { status: 400 }
+      return createErrorResponse(
+        "VALIDATION_ERROR",
+        "Invalid questionnaire data format"
       );
     }
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      return NextResponse.json(
-        { error: "OpenAI API key not configured" },
-        { status: 500 }
+      return createErrorResponse(
+        "INTERNAL_ERROR",
+        "OpenAI API key not configured"
       );
     }
 
@@ -474,10 +550,8 @@ export async function POST(req: Request) {
       ? "ai-governance-policy"
       : policyType;
 
-    // Normalize quality tier (default to standard). Support both `qualityTier` and legacy `mode`.
-    const requestedTier = (qualityTier ?? mode) as string | undefined;
-    const normalizedTier: QualityTier =
-      requestedTier === "premium" ? "premium" : "standard";
+    // Use the tier already determined above (from query param or body)
+    const normalizedTier: QualityTier = tier;
 
     // Generate policy with validation and retry logic
     const generationResult = await generatePolicyWithValidation(
@@ -487,6 +561,9 @@ export async function POST(req: Request) {
       promptPolicyType,
       normalizedTier
     );
+
+    // Increment quota usage after successful generation
+    incrementQuota(userId, tier);
 
     // Replace date placeholders and outdated dates with current date
     let contentWithDates = replaceDatePlaceholders(generationResult.parsed.content);
@@ -517,8 +594,9 @@ export async function POST(req: Request) {
       0
     );
 
-    // Log final generation summary
-    console.log(`[Policy Generation] Completed:`, {
+    // Log final generation summary (reduced verbosity in production)
+    const logData = {
+      userId, // Include user ID for audit trail
       policyType,
       finalModel: successfulAttempt.model,
       qualityScore: generationResult.qualityScore.toFixed(3),
@@ -532,17 +610,28 @@ export async function POST(req: Request) {
         "%",
       totalDuration: `${totalDuration}ms`,
       retryCount: generationResult.attempts.length - 1,
-      totalEstimatedCostUsd: Number(totalEstimatedCostUsd.toFixed(6)),
-      attempts: generationResult.attempts.map((a) => ({
-        attempt: a.attemptNumber,
-        model: a.model,
-        success: a.success,
-        qualityScore: a.qualityScore?.toFixed(3),
-        duration: a.duration ? `${a.duration}ms` : undefined,
-        estimatedCostUsd: a.estimatedCostUsd,
-        tokenUsage: a.tokenUsage,
-      })),
-    });
+      tier: normalizedTier,
+    };
+
+    // In production, only log essential info; in development, log detailed info
+    if (process.env.NODE_ENV === "development" || process.env.ENABLE_VERBOSE_LOGGING === "true") {
+      console.log(`[Policy Generation] Completed:`, {
+        ...logData,
+        totalEstimatedCostUsd: Number(totalEstimatedCostUsd.toFixed(6)),
+        attempts: generationResult.attempts.map((a) => ({
+          attempt: a.attemptNumber,
+          model: a.model,
+          success: a.success,
+          qualityScore: a.qualityScore?.toFixed(3),
+          duration: a.duration ? `${a.duration}ms` : undefined,
+          estimatedCostUsd: a.estimatedCostUsd,
+          tokenUsage: a.tokenUsage,
+        })),
+      });
+    } else {
+      // Production: minimal logging
+      console.log(`[Policy Generation] Completed:`, logData);
+    }
 
     return NextResponse.json({
       content: contentWithDates,
@@ -566,20 +655,11 @@ export async function POST(req: Request) {
         totalDuration,
       },
     });
-  } catch (e: any) {
+  } catch (error) {
     const totalDuration = Date.now() - requestStartTime;
-    console.error(`[Policy Generation] Failed after ${totalDuration}ms:`, e);
+    console.error(`[Policy Generation] Failed after ${totalDuration}ms:`, error);
     
-    return NextResponse.json(
-      { 
-        error: e.message ?? "Failed to generate policy",
-        // Include error details for debugging
-        errorDetails: {
-          message: e.message,
-          duration: totalDuration,
-        },
-      },
-      { status: 500 }
-    );
+    // Use centralized error handler
+    return handleError(error, "generate-policy");
   }
 }

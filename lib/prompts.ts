@@ -54,12 +54,14 @@ Return exactly two blocks, using these delimiters:
 }
 -----END POLICY-METAJSON-----
 
-## Citation Format (CRITICAL)
+## Citation Format
 
-Use ONLY these inline formats after relevant sentences:
+Include inline citations where relevant using these formats:
 - GDPR: (GDPR Art. 6)
 - AI Act: (AI Act Art. 9)
 - ISO 42001: (ISO 42001 §8.2)
+
+Citations should be included naturally where they add value and help demonstrate compliance coverage.
 
 ## Coverage Targets
 
@@ -114,74 +116,26 @@ export function buildPromptForModel(
     
     return `${SYSTEM_PROMPT_BASE}
 
-## GPT-3.5-TURBO: CRITICAL FORMAT REQUIREMENTS
+## Format Reminders for GPT-3.5
 
-**YOU MUST FOLLOW THIS EXACT STRUCTURE:**
-
-Step 1: Write your complete policy content in Markdown format with section headings.
-
-Step 2: Wrap the ENTIRE policy content with these EXACT delimiters (copy them exactly):
+1. Write the policy content in Markdown
+2. Wrap it with these delimiters:
 -----BEGIN POLICY-MARKDOWN-----
-[Your complete policy markdown content goes here]
+[policy content]
 -----END POLICY-MARKDOWN-----
 
-Step 3: Create a METAJSON block with this EXACT structure:
+3. Add METAJSON block:
 -----BEGIN POLICY-METAJSON-----
 {
   "policy_type": "${policyTypeNormalized}",
   "placeholders_present": false,
   "jurisdictions": [],
   "coverage": { "gdpr": 0, "ai_act": 0, "iso_42001": 0 },
-  "sections": [
-    {
-      "id": "sec_intro",
-      "title": "Introduction & Scope",
-      "framework_refs": ["GDPR Art. 13"]
-    }
-  ]
+  "sections": [...]
 }
 -----END POLICY-METAJSON-----
 
-**EXAMPLE OUTPUT STRUCTURE:**
-
------BEGIN POLICY-MARKDOWN-----
-# Introduction & Scope
-
-This policy describes how we handle personal data (GDPR Art. 13).
-
-# Data Collection
-
-We collect data for processing purposes (GDPR Art. 6).
------END POLICY-MARKDOWN-----
-
------BEGIN POLICY-METAJSON-----
-{
-  "policy_type": "${policyTypeNormalized}",
-  "placeholders_present": false,
-  "jurisdictions": ["GDPR_EU"],
-  "coverage": { "gdpr": 0, "ai_act": 0, "iso_42001": 0 },
-  "sections": [
-    {
-      "id": "sec_intro",
-      "title": "Introduction & Scope",
-      "framework_refs": ["GDPR Art. 13"]
-    },
-    {
-      "id": "sec_data_collection",
-      "title": "Data Collection",
-      "framework_refs": ["GDPR Art. 6"]
-    }
-  ]
-}
------END POLICY-METAJSON-----
-
-**CRITICAL REMINDERS:**
-- Use EXACT delimiter format: -----BEGIN POLICY-MARKDOWN----- and -----END POLICY-MARKDOWN-----
-- Use EXACT delimiter format: -----BEGIN POLICY-METAJSON----- and -----END POLICY-METAJSON-----
-- Citation formats MUST be exactly: (GDPR Art. 6), (AI Act Art. 9), (ISO 42001 §8.2)
-- Do NOT add any text before or after the delimiter blocks
-- Do NOT use code fences (\`\`\`) around the blocks
-- The METAJSON must be valid JSON (no trailing commas, proper quotes)`;
+Important: Use valid JSON in METAJSON (no trailing commas). Include citations naturally where relevant.`;
   } else {
     // For GPT-4 and higher models, keep instructions closer to base with minimal clarifications
     return `${SYSTEM_PROMPT_BASE}
@@ -257,9 +211,9 @@ Required Sections (include all, even if placeholder-only):
 11. Mapping Appendix (list all sections with their framework references - EXCLUDE Contact Information as it has no framework references)
 12. Last updated: YYYY-MM-DD (use the actual current date in YYYY-MM-DD format, for example: Last updated: 2024-12-19)
 
-## CRITICAL: GDPR Citation Requirements (MINIMUM 15 GDPR citations required)
+## GDPR Citation Guidance
 
-You MUST include inline citations for ALL of these GDPR articles:
+Include citations for relevant GDPR articles where they apply. Key articles to consider:
 - (GDPR Art. 5) - Use when discussing data processing principles (lawfulness, fairness, transparency, purpose limitation, data minimization)
 - (GDPR Art. 6) - Use when explaining lawful basis for processing (consent, contract, legal obligation, legitimate interests)
 - (GDPR Art. 7) - Use when explaining how consent is obtained, that it can be withdrawn, and how to withdraw it
@@ -286,7 +240,7 @@ Example sentences with citations:
 "We do not transfer personal data based on court orders or judgments from third countries that are not recognized under EU law (GDPR Art. 48)."
 
 Important:
-- EVERY section MUST have at least one (GDPR Art. X) citation
+- Include citations where they naturally fit and demonstrate compliance
 - DO NOT use [Action Required: ...] placeholders if the information is provided in Company Details above.
 - Include inline mapping notes in parentheses like "(GDPR Art. 13 – Information to be provided)" or "(ISO 42001 §8.2 – Privacy)".
 - The Mapping Appendix must list each section with its framework references.
@@ -384,7 +338,7 @@ Company Details:
 - Responsible Person: ${responsiblePerson}
 - Responsible Person Contact: ${responsiblePersonContact}
 
-Required Sections (MUST include AI Act citations in each AI-related section):
+Required Sections (include AI Act citations where relevant):
 1. Scope and Purpose of AI Usage (MUST cite: AI Act Art. 3 for definitions, ISO 42001 §6)
 2. AI Use Cases and Applications (MUST cite: AI Act Art. 4 for prohibited practices, AI Act Art. 52 for transparency, ISO 42001 §6.2)
 3. Data Handling and Privacy Considerations (MUST cite: AI Act Art. 10 for data governance, GDPR Art. 5, ISO 42001 §8.2)
@@ -396,9 +350,9 @@ Required Sections (MUST include AI Act citations in each AI-related section):
 9. Mapping Appendix (list all sections with their framework references)
 10. Last updated: YYYY-MM-DD (use the actual current date in YYYY-MM-DD format, for example: Last updated: 2024-12-19)
 
-## CRITICAL: AI Act Citation Requirements (MINIMUM 10 AI Act citations required)
+## AI Act Citation Guidance
 
-You MUST include inline citations for ALL of these AI Act articles:
+Include citations for relevant AI Act articles where they apply. Key articles to consider:
 - (AI Act Art. 3) - Use in Scope section when defining AI systems
 - (AI Act Art. 4) - Use when discussing prohibited practices we avoid
 - (AI Act Art. 5) - Use when discussing AI literacy and training
@@ -481,7 +435,7 @@ Company Details:
 - Training Provided: ${trainingProvided}
 - Incident Reporting Procedure: ${incidentReportingProcedure}
 
-Required Sections (MUST include AI Act citations in each section):
+Required Sections (include AI Act citations where relevant):
 1. Governance Framework and Organizational Structure (MUST cite: AI Act Art. 6, AI Act Art. 26 for provider obligations, ISO 42001 §5)
 2. Responsible AI Principles (Transparency, Fairness, Accountability) (MUST cite: AI Act Art. 10, AI Act Art. 13 for transparency, AI Act Art. 27 for fundamental rights, ISO 42001 §4.2)
 3. Documentation and Review Procedures (MUST cite: AI Act Art. 11 for documentation, AI Act Art. 12 for record-keeping, ISO 42001 §8.4)

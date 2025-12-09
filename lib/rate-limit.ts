@@ -109,16 +109,34 @@ export function checkRateLimit(
 /**
  * Rate limit middleware for Next.js API routes
  * Returns NextResponse with 429 status if rate limited
+ * 
+ * @param request - The incoming request
+ * @param tier - Quality tier (standard or premium)
+ * @param userId - Optional authenticated user ID (preferred over IP for security)
  */
 export function rateLimitMiddleware(
   request: Request,
-  tier: "standard" | "premium" = "standard"
+  tier: "standard" | "premium" = "standard",
+  userId?: string
 ): NextResponse | null {
-  // Get identifier from request (IP address or user ID)
-  // In production, extract from headers or auth token
-  const forwarded = request.headers.get("x-forwarded-for");
-  const ip = forwarded ? forwarded.split(",")[0].trim() : "unknown";
-  const identifier = ip !== "unknown" ? ip : "anonymous";
+  // Prefer authenticated user ID over IP address for security
+  // IP-based rate limiting is spoofable and less reliable
+  let identifier: string;
+  
+  if (userId) {
+    // Use authenticated user ID (most secure)
+    identifier = userId;
+  } else {
+    // Fallback to IP address for unauthenticated requests (less secure)
+    const forwarded = request.headers.get("x-forwarded-for");
+    const ip = forwarded ? forwarded.split(",")[0].trim() : "unknown";
+    identifier = ip !== "unknown" ? ip : "anonymous";
+    
+    // Log warning for unauthenticated rate limiting
+    if (process.env.NODE_ENV === "development") {
+      console.warn("[Rate Limit] Using IP-based rate limiting (less secure). Consider requiring authentication.");
+    }
+  }
   
   const result = checkRateLimit(identifier, tier);
   
@@ -161,12 +179,15 @@ export function logRateLimitViolation(
   tier: "standard" | "premium",
   path: string
 ): void {
-  console.warn(`[Rate Limit] Violation detected:`, {
-    identifier,
-    tier,
-    path,
-    timestamp: new Date().toISOString(),
-  });
+  // Only log in development or if explicitly enabled
+  if (process.env.NODE_ENV === "development" || process.env.ENABLE_RATE_LIMIT_LOGGING === "true") {
+    console.warn(`[Rate Limit] Violation detected:`, {
+      identifier: identifier.startsWith("rate_limit:") ? identifier : `user:${identifier}`,
+      tier,
+      path,
+      timestamp: new Date().toISOString(),
+    });
+  }
 }
 
 

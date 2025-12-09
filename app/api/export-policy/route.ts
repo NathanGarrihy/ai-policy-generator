@@ -1,64 +1,125 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { authenticateRequest, createAuthenticatedClient, verifyResourceOwnership } from "@/lib/auth-middleware";
 import { generatePDF, generateDOCX } from "@/lib/export";
+import { PolicyIdSchema, ExportFormatSchema } from "@/lib/validation";
+import { parseRequestBody } from "@/lib/request-helpers";
+import { createErrorResponse, handleError } from "@/lib/error-handler";
 
-function srv() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
+interface ExportRequestBody {
+  policy_id: string;
+  format: "pdf" | "docx";
 }
 
 export async function POST(req: Request) {
   try {
-    const { policy_id, format } = await req.json();
+    // Authenticate request
+    const authResult = await authenticateRequest();
+    if (!authResult.authenticated) {
+      return authResult.response;
+    }
+    const { userId } = authResult;
 
-    if (!policy_id || !format || !["pdf", "docx"].includes(format)) {
-      return NextResponse.json(
-        { error: "policy_id and format (pdf|docx) required" },
-        { status: 400 }
+    // Parse and validate request body (optimized - single read)
+    const parseResult = await parseRequestBody<ExportRequestBody>(req, 1024 * 1024); // 1MB max
+    if (parseResult instanceof NextResponse) {
+      return parseResult; // Error response
+    }
+    const { body } = parseResult;
+    const { policy_id, format } = body;
+
+    // Validate policy_id format
+    const policyIdResult = PolicyIdSchema.safeParse(policy_id);
+    if (!policyIdResult.success) {
+      return createErrorResponse(
+        "VALIDATION_ERROR",
+        "Invalid policy_id format",
+        policyIdResult.error.errors
       );
     }
 
-    const supabase = srv();
+    // Validate format
+    const formatResult = ExportFormatSchema.safeParse(format);
+    if (!formatResult.success) {
+      return createErrorResponse(
+        "VALIDATION_ERROR",
+        "Invalid format. Must be 'pdf' or 'docx'",
+        formatResult.error.errors
+      );
+    }
 
-    // Get policy
+    // Use authenticated Supabase client
+    const supabase = createAuthenticatedClient();
+
+    // Get policy and verify ownership
     const { data: policy, error: policyError } = await supabase
       .from("user_policies")
       .select("*")
       .eq("id", policy_id)
+      .eq("user_id", userId) // Filter by authenticated user_id
       .single();
 
     if (policyError || !policy) {
-      return NextResponse.json(
-        { error: "Policy not found" },
-        { status: 404 }
+      // Don't reveal if policy exists but belongs to another user
+      return createErrorResponse(
+        "NOT_FOUND",
+        "Policy not found"
       );
     }
 
-    // Get questionnaire for company name
+    // Additional ownership verification (defense in depth)
+    if (!verifyResourceOwnership(policy.user_id, userId)) {
+      return createErrorResponse(
+        "AUTHORIZATION_ERROR",
+        "Cannot export policy belonging to another user"
+      );
+    }
+
+    // Get questionnaire for company name (verify ownership)
     const { data: questionnaire } = await supabase
       .from("user_questionnaires")
-      .select("answers")
+      .select("answers, user_id")
       .eq("id", policy.source_questionnaire_id)
+      .eq("user_id", userId) // Ensure questionnaire belongs to user
       .single();
+    
+    if (!questionnaire || !verifyResourceOwnership(questionnaire.user_id, userId)) {
+      return createErrorResponse(
+        "NOT_FOUND",
+        "Questionnaire not found or unauthorized"
+      );
+    }
 
-    const companyName =
-      (questionnaire?.answers as any)?.company_name || "Company";
+    // Extract company name from questionnaire answers
+    const answers = questionnaire?.answers as Record<string, unknown> | undefined;
+    const companyName = (answers?.company_name as string | undefined) || "Company";
 
-    // Get mappings
-    const { data: mappings } = await supabase
+    // Get mappings (no error handling needed - empty array is acceptable)
+    const { data: mappings, error: mappingsError } = await supabase
       .from("policy_mappings")
       .select("*")
       .eq("policy_version_id", policy_id);
+    
+    if (mappingsError && process.env.NODE_ENV === "development") {
+      console.warn("[Export Policy] Error fetching mappings:", mappingsError);
+    }
 
-    // Get version history with framework_coverage
-    const { data: versions } = await supabase
+    // Get version history with framework_coverage (filtered by user_id)
+    // Note: Consider adding database index on (user_id, policy_type, version_number) for optimal performance
+    const { data: versions, error: versionsError } = await supabase
       .from("user_policies")
       .select("version_number, created_at, framework_coverage")
       .eq("policy_type", policy.policy_type)
+      .eq("user_id", userId) // Only get versions for this user
       .order("version_number", { ascending: false })
       .limit(10);
+    
+    if (versionsError) {
+      return createErrorResponse(
+        "INTERNAL_ERROR",
+        "Failed to retrieve version history",
+        process.env.NODE_ENV === "development" ? { error: versionsError.message } : undefined
+      );
+    }
 
     // Build version history with coverage and calculate deltas
     const versionHistory =
@@ -154,11 +215,8 @@ export async function POST(req: Request) {
         "Content-Disposition": `attachment; filename="${filename}"`,
       },
     });
-  } catch (e: any) {
-    return NextResponse.json(
-      { error: e.message || "Export failed" },
-      { status: 500 }
-    );
+  } catch (error) {
+    return handleError(error, "export-policy");
   }
 }
 
