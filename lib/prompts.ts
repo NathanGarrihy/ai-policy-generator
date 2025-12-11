@@ -116,15 +116,20 @@ export function buildPromptForModel(
     
     return `${SYSTEM_PROMPT_BASE}
 
+## CRITICAL FORMAT REQUIREMENTS (GPT-3.5-TURBO)
+Step 1: Follow SYSTEM PROMPT exactly; do not change delimiters or section order.
+Step 2: Validate the POLICY-MARKDOWN and POLICY-METAJSON blocks are present and formatted exactly.
+Step 3: Ensure METAJSON is valid JSON (no trailing commas) and matches the requested policy_type.
+
 ## Format Reminders for GPT-3.5
 
-1. Write the policy content in Markdown
-2. Wrap it with these delimiters:
+Step 1. Write the policy content in Markdown
+Step 2. Wrap it with these delimiters:
 -----BEGIN POLICY-MARKDOWN-----
 [policy content]
 -----END POLICY-MARKDOWN-----
 
-3. Add METAJSON block:
+Step 3. Add METAJSON block:
 -----BEGIN POLICY-METAJSON-----
 {
   "policy_type": "${policyTypeNormalized}",

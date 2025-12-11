@@ -25,6 +25,7 @@ import {
   FRAMEWORK_REFERENCES,
   QUALITY_THRESHOLDS,
   REGEX_CACHE,
+  RULES_CACHE,
 } from "./constants";
 
 export type PolicyType = "privacy_policy" | "ai_usage_policy" | "ai_governance_policy";
@@ -467,8 +468,8 @@ class RulesCache {
   private accessOrder: string[] = [];
   private readonly maxSize: number;
 
-  constructor(maxSize: number = RULES_CACHE.MAX_SIZE) {
-    this.maxSize = maxSize;
+  constructor(maxSize?: number) {
+    this.maxSize = maxSize ?? RULES_CACHE.MAX_SIZE;
   }
 
   get(key: string): ComplianceRule[] | undefined {

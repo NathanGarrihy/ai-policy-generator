@@ -209,7 +209,8 @@ export function parsePolicyOutput(rawContent: string): ParsedPolicy {
     let hasFrameworkRefs = false;
     
     try {
-      hasMarkdownHeadings = /^#{1,3}\s+/m.test(fallbackContent);
+      // Test for markdown headings (1-6 # symbols followed by space at start of line)
+      hasMarkdownHeadings = /^#{1,6}\s+/m.test(fallbackContent);
     } catch (headingTestError: any) {
       fallbackWarnings.push(`Error testing markdown headings: ${headingTestError.message || String(headingTestError)}`);
     }
@@ -220,7 +221,9 @@ export function parsePolicyOutput(rawContent: string): ParsedPolicy {
       fallbackWarnings.push(`Error testing framework references: ${refTestError.message || String(refTestError)}`);
     }
     
-    if (hasMarkdownHeadings && hasFrameworkRefs) {
+    // Treat content with headings as structured enough, even if framework refs
+    // are missing (e.g., drafts that only include section scaffolding).
+    if (hasMarkdownHeadings || hasFrameworkRefs) {
       hasPartialStructure = true;
     }
 
