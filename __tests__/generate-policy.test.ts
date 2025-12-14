@@ -6,6 +6,39 @@
 import { POST } from "@/app/api/generate-policy/route";
 import { NextRequest } from "next/server";
 
+// Mock authentication middleware
+jest.mock("@/lib/auth-middleware", () => ({
+  authenticateRequest: jest.fn(() =>
+    Promise.resolve({
+      authenticated: true,
+      user: { id: "test-user-id", email: "test@example.com" },
+      userId: "test-user-id",
+    })
+  ),
+}));
+
+// Mock rate limiting middleware
+jest.mock("@/lib/rate-limit", () => ({
+  rateLimitMiddleware: jest.fn(() => null),
+  logRateLimitViolation: jest.fn(),
+}));
+
+// Mock quota middleware
+jest.mock("@/lib/quota", () => ({
+  checkQuotaMiddleware: jest.fn(() => null),
+  incrementQuota: jest.fn(),
+}));
+
+// Mock next/headers cookies
+jest.mock("next/headers", () => ({
+  cookies: jest.fn(() => ({
+    getAll: jest.fn(() => []),
+    get: jest.fn(() => undefined),
+    set: jest.fn(),
+    delete: jest.fn(),
+  })),
+}));
+
 // Mock OpenAI API
 const mockOpenAIResponse = {
   choices: [

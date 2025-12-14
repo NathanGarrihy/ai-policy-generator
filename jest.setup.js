@@ -69,6 +69,8 @@ if ((typeof globalThis !== "undefined" && !globalThis.Request) ||
 }
 
 // Mock environment variables (idempotent - safe to run multiple times)
+// Set NODE_ENV to development so error responses include details for debugging
+process.env.NODE_ENV = "development";
 process.env.NEXT_PUBLIC_SUPABASE_URL = "https://test.supabase.co";
 process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "test-anon-key";
 process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";

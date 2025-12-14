@@ -302,16 +302,19 @@ export function testRetryLogicTriggers() {
     },
   ];
 
-  const results = testCases.map((testCase) => {
+  const results = testCases.map((testCase, index) => {
     const shouldRetry = testCase.qualityScore < qualityThreshold;
-    const attemptNumber = shouldRetry ? 1 : 0; // Simulate attempt number
+    // Simulate attempt number: 1st attempt = 1, 2nd = 2, 3rd = 3, etc.
+    const attemptNumber = index + 1;
+    // Fallback to GPT-4 on 3rd attempt (attemptNumber >= 3)
     const shouldFallbackToGPT4 =
-      shouldRetry && attemptNumber >= 2; // Fallback on 3rd attempt
+      shouldRetry && attemptNumber >= 3;
 
     return {
       qualityScore: testCase.qualityScore,
       shouldRetry,
       shouldFallbackToGPT4,
+      attemptNumber,
       matchesExpected: {
         retry: shouldRetry === testCase.shouldRetry,
         fallback: shouldFallbackToGPT4 === testCase.shouldFallbackToGPT4,

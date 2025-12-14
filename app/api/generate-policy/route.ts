@@ -515,13 +515,13 @@ export async function POST(req: Request) {
         );
       }
     } catch (validationError: unknown) {
-      if (validationError && typeof validationError === "object" && "errors" in validationError) {
+      if (validationError && typeof validationError === "object" && "issues" in validationError) {
         // Zod validation error
-        const zodError = validationError as { errors: Array<{ path: (string | number)[]; message: string }> };
+        const zodError = validationError as { issues: Array<{ path: (string | number)[]; message: string }> };
         return createErrorResponse(
           "VALIDATION_ERROR",
           "Questionnaire data validation failed",
-          zodError.errors.map((err) => ({
+          zodError.issues.map((err) => ({
             path: err.path.join("."),
             message: err.message,
           }))
