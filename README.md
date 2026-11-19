@@ -2,6 +2,8 @@
 
 PolicyPilot is an AI-powered compliance platform for EU/UK B2B SaaS startups. It generates GDPR, AI Act, and ISO 42001-aligned policies with buyer-ready evidence packs.
 
+> **Disclaimer:** PolicyPilot is a portfolio project. Generated policies and compliance scores are drafts to support your own review — they are not legal advice. Have a qualified professional review any policy before you rely on it.
+
 **North Star**: "Generate, monitor, and prove EU-grade privacy & AI governance — turning AI Act + ISO 42001 duties into live policies, evidence, and buyer-ready compliance reports for startups."
 
 ## Table of Contents
